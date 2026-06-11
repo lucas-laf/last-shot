@@ -1,0 +1,40 @@
+# Non-secret configuration. Secrets live in .env.
+
+data_dir: data            # SQLite DB + parquet tick files live here
+
+discovery:
+  # Betfair event type NAMES to scan (resolved via listEventTypes at runtime).
+  betfair_event_types:
+    ["Soccer", "Basketball", "Tennis", "American Football", "Baseball", "Politics"]
+  # For sports event types only; Politics markets keep all market types.
+  betfair_market_types: ["MATCH_ODDS", "MONEYLINE", "OUTRIGHT", "WINNER"]
+  # listMarketCatalogue is weight-limited with MARKET_DESCRIPTION+RUNNER_DESCRIPTION
+  # projections; 200 per event type (sorted by traded volume) stays under the cap.
+  betfair_max_results: 200
+  polymarket_page_size: 100
+  polymarket_max_pages: 60
+
+matching:
+  candidate_min_fuzz: 60        # rapidfuzz token_set_ratio floor for candidate pairs
+  event_time_window_hours: 12   # candidate events must start within this window of each other
+  auto_accept_confidence: 0.9   # LLM confidence at/above this with no resolution risk -> auto-track
+  bulk_model: claude-haiku-4-5-20251001
+  escalation_model: claude-sonnet-4-6
+  escalation_confidence_band: [0.4, 0.9]  # bulk verdicts in this band re-checked by escalation model
+
+tracking:
+  betfair_poll_seconds: 1.0     # used when app key is delayed (no stream)
+  tick_flush_rows: 500          # parquet writer buffer
+  reconnect_backoff_seconds: [1, 2, 5, 10, 30]
+
+signals:
+  # commission/min edge can be overridden by BETFAIR_COMMISSION / MIN_EDGE in .env
+  betfair_commission: 0.05
+  min_edge: 0.02                # extra margin required beyond modeled costs
+  polymarket_default_taker_fee: 0.0   # per-market taker_base_fee from API takes precedence
+  max_paper_stake: 100.0        # nominal stake per paper trade (GBP-equivalent)
+  book_depth_recorded: 5
+  convergence_ref: betfair      # deeper | betfair | polymarket (replay 2026-06-11:
+                                # betfair-as-truth was the only viable variant)
+  max_ref_spread: 0.03          # skip convergence when the reference book is wider
+                                # than this — a wide mid is an artifact, not a price

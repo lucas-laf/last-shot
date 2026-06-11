@@ -1,0 +1,17 @@
+# secrets — Betfair credentials live here, never commit
+.env
+
+# data & runtime artifacts
+data/
+logs/
+*.log
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# os
+.DS_Store
+.claude/
