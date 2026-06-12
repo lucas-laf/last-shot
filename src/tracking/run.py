@@ -11,6 +11,10 @@ import logging
 from datetime import datetime, timezone
 
 from ..betfair_client import make_client
+from ..execution.arb_executor import ArbExecutor
+from ..execution.betfair_executor import BetfairExecutor
+from ..execution.latency import RttMonitor
+from ..execution.polymarket_executor import PolymarketExecutor
 from ..models import MatchStatus, Platform, Tick
 from ..settings import load_settings
 from ..signals.engine import PairState, SignalEngine
@@ -81,6 +85,7 @@ async def main() -> None:
 
     async def on_tick(tick: Tick) -> None:
         writer.write(tick)
+        arb_exec.on_tick(tick)
         if tick.platform == Platform.BETFAIR:
             state = by_bf.get((tick.market_id, tick.outcome_id))
             if state:
@@ -103,7 +108,31 @@ async def main() -> None:
         betfair_depth=bf_feed.depth,
         polymarket_depth=pm_feed.depth,
     )
-    engine.on_signal = trader.on_signal
+
+    ex = cfg.get("execution", {})
+    rtt = RttMonitor(store, session_token=client.session_token or "",
+                     app_key=client.app_key)
+    arb_exec = ArbExecutor(
+        store=store,
+        bf_exec=BetfairExecutor(client, store, armed=ex.get("armed", False)),
+        pm_exec=PolymarketExecutor(store, private_key=cfg.get("poly_private_key", ""),
+                                   funder=cfg.get("poly_funder", ""),
+                                   armed=ex.get("armed", False)),
+        rtt=rtt,
+        categories={m.market_id: m.category
+                    for m in store.get_markets(Platform.BETFAIR, active_only=False)},
+        armed=ex.get("armed", False),
+        live_categories=tuple(ex.get("live_categories", ["soccer", "politics"])),
+        max_shares_per_leg=ex.get("max_shares_per_leg", 5.0),
+        max_arbs_per_outcome=ex.get("max_arbs_per_outcome", 1),
+        max_daily_capital=ex.get("max_daily_capital", 50.0),
+    )
+
+    def on_signal(sig):
+        trader.on_signal(sig)
+        arb_exec.on_signal(sig)
+
+    engine.on_signal = on_signal
 
     async def status() -> None:
         while True:
@@ -121,7 +150,8 @@ async def main() -> None:
             writer.flush()
 
     try:
-        await asyncio.gather(bf_feed.run(), pm_feed.run(), status())
+        await asyncio.gather(bf_feed.run(), pm_feed.run(), status(),
+                             rtt.run(), arb_exec.bf_exec.keep_alive_loop())
     finally:
         writer.flush()
 

@@ -70,6 +70,31 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     won INTEGER,
     pnl REAL
 );
+
+CREATE TABLE IF NOT EXISTS shadow_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    decision_ts TEXT NOT NULL,
+    platform TEXT NOT NULL,           -- platform the order targets
+    market_id TEXT NOT NULL,
+    outcome_id TEXT NOT NULL,
+    betfair_market_id TEXT,           -- pair context for category joins
+    outcome_name TEXT,
+    side TEXT NOT NULL,
+    price REAL NOT NULL,              -- raw book price we would cross
+    size REAL NOT NULL,
+    rtt_ms REAL NOT NULL,             -- assumed order arrival latency
+    decide_us REAL,                   -- signal->order-ready, microseconds
+    captured INTEGER,                 -- 1 quote survived to arrival, 0 gone
+    basis TEXT,                       -- post_rtt_tick | killed_early | timeout_unchanged
+    resolved_ts TEXT
+);
+
+CREATE TABLE IF NOT EXISTS exec_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    kind TEXT NOT NULL,               -- rtt_betfair | rtt_polymarket | order | ...
+    payload_json TEXT
+);
 """
 
 
@@ -223,6 +248,35 @@ class Store:
                     t.betfair_book, t.polymarket_book, int(t.settled),
                     None if t.won is None else int(t.won), t.pnl,
                 ),
+            )
+
+    # ---------- execution / shadow ----------
+
+    def save_shadow_order(self, row: dict) -> int:
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                """INSERT INTO shadow_orders
+                   (decision_ts, platform, market_id, outcome_id, betfair_market_id,
+                    outcome_name, side, price, size, rtt_ms, decide_us)
+                   VALUES (:decision_ts, :platform, :market_id, :outcome_id,
+                           :betfair_market_id, :outcome_name, :side, :price, :size,
+                           :rtt_ms, :decide_us)""",
+                row,
+            )
+            return cur.lastrowid
+
+    def resolve_shadow_order(self, order_id: int, captured: bool, basis: str) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE shadow_orders SET captured=?, basis=?, resolved_ts=? WHERE id=?",
+                (int(captured), basis, datetime.now(timezone.utc).isoformat(), order_id),
+            )
+
+    def save_exec_event(self, kind: str, payload: dict) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO exec_events (ts, kind, payload_json) VALUES (?,?,?)",
+                (datetime.now(timezone.utc).isoformat(), kind, json.dumps(payload)),
             )
 
 

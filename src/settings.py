@@ -34,4 +34,11 @@ def load_settings(config_path: Path | None = None) -> dict[str, Any]:
         "key_file": os.getenv("BETFAIR_KEY_FILE", ""),
     }
     cfg["anthropic_api_key"] = os.getenv("ANTHROPIC_API_KEY", "")
+
+    # execution: armed only when BOTH config and env say so
+    cfg.setdefault("execution", {})
+    if os.getenv("EXECUTOR_ARMED", "").lower() not in ("1", "true", "yes"):
+        cfg["execution"]["armed"] = False
+    cfg["poly_private_key"] = os.getenv("POLY_PRIVATE_KEY", "")
+    cfg["poly_funder"] = os.getenv("POLY_FUNDER", "")
     return cfg
