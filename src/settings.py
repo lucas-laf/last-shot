@@ -39,6 +39,11 @@ def load_settings(config_path: Path | None = None) -> dict[str, Any]:
     cfg.setdefault("execution", {})
     if os.getenv("EXECUTOR_ARMED", "").lower() not in ("1", "true", "yes"):
         cfg["execution"]["armed"] = False
-    cfg["poly_private_key"] = os.getenv("POLY_PRIVATE_KEY", "")
+    pk = os.getenv("POLY_PRIVATE_KEY", "")
+    if pk and not pk.startswith("0x"):
+        pk = "0x" + pk
+    cfg["poly_private_key"] = pk
     cfg["poly_funder"] = os.getenv("POLY_FUNDER", "")
+    # 2 = browser-wallet proxy (user's setup), 1 = email/magic proxy, 0 = EOA
+    cfg["poly_signature_type"] = int(os.getenv("POLY_SIGNATURE_TYPE", "2"))
     return cfg

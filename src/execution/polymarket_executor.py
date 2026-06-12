@@ -20,7 +20,7 @@ POLYGON_CHAIN_ID = 137
 
 class PolymarketExecutor:
     def __init__(self, store: Store, private_key: str = "", funder: str = "",
-                 armed: bool = False):
+                 armed: bool = False, signature_type: int = 2):
         self.store = store
         self.armed = armed and bool(private_key)
         self._client = None
@@ -29,6 +29,7 @@ class PolymarketExecutor:
             self._client = ClobClient(
                 CLOB_HOST, key=private_key, chain_id=POLYGON_CHAIN_ID,
                 funder=funder or None,
+                signature_type=signature_type if funder else None,
             )
             self._client.set_api_creds(self._client.create_or_derive_api_creds())
             logger.info("Polymarket CLOB client ready (armed=%s)", self.armed)

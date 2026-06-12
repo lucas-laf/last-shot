@@ -118,7 +118,8 @@ async def main() -> None:
         bf_exec=BetfairExecutor(client, store, armed=ex.get("armed", False)),
         pm_exec=PolymarketExecutor(store, private_key=cfg.get("poly_private_key", ""),
                                    funder=cfg.get("poly_funder", ""),
-                                   armed=ex.get("armed", False)),
+                                   armed=ex.get("armed", False),
+                                   signature_type=cfg.get("poly_signature_type", 2)),
         rtt=rtt,
         categories={m.market_id: m.category
                     for m in store.get_markets(Platform.BETFAIR, active_only=False)},
