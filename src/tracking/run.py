@@ -76,6 +76,7 @@ async def main() -> None:
         min_edge=cfg["signals"]["min_edge"],
         convergence_ref=cfg["signals"].get("convergence_ref", "deeper"),
         max_ref_spread=cfg["signals"].get("max_ref_spread"),
+        convergence_enabled=cfg["signals"].get("convergence_enabled", True),
     )
 
     client = make_client(cfg)

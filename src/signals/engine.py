@@ -60,6 +60,7 @@ class SignalEngine:
         on_signal: Callable[[Signal], None] | None = None,
         convergence_ref: str = "deeper",  # "deeper" | "betfair" | "polymarket"
         max_ref_spread: float | None = None,
+        convergence_enabled: bool = True,
     ):
         self.commission = commission
         self.min_edge = min_edge
@@ -70,6 +71,9 @@ class SignalEngine:
             raise ValueError(f"bad convergence_ref: {convergence_ref!r}")
         self.convergence_ref = convergence_ref
         self.max_ref_spread = max_ref_spread
+        # Retired 2026-06-12: no convergence variant survived out-of-sample
+        # testing (86 events, t=-0.58); replay.py can resurrect it from ticks.
+        self.convergence_enabled = convergence_enabled
 
     def evaluate(self, s: PairState, now: datetime | None = None) -> list[Signal]:
         """`now` overrides wall-clock time so recorded ticks can be replayed."""
@@ -104,6 +108,11 @@ class SignalEngine:
                               pm_sell, bf_buy, edge, now)
 
         # --- convergence: the reference platform's mid is treated as truth ---
+        if not self.convergence_enabled:
+            for sig in out:
+                if self.on_signal:
+                    self.on_signal(sig)
+            return out
         if self.convergence_ref == "betfair" or (
             self.convergence_ref == "deeper" and s.bf_liquidity >= s.pm_liquidity
         ):

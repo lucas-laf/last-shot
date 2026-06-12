@@ -34,6 +34,9 @@ signals:
   polymarket_default_taker_fee: 0.0   # per-market taker_base_fee from API takes precedence
   max_paper_stake: 100.0        # nominal stake per paper trade (GBP-equivalent)
   book_depth_recorded: 5
+  convergence_enabled: false    # retired 2026-06-12: no variant survived
+                                # out-of-sample (86 events, t=-0.58); lock_arb only.
+                                # replay.py reconstructs convergence from ticks.
   convergence_ref: betfair      # deeper | betfair | polymarket (replay 2026-06-11:
                                 # betfair-as-truth was the only viable variant)
   max_ref_spread: 0.03          # skip convergence when the reference book is wider
