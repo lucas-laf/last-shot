@@ -80,6 +80,11 @@ class Store:
         (self.data_dir / "ticks").mkdir(exist_ok=True)
         self.db_path = self.data_dir / "lastshot.db"
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        # WAL lets ad-hoc reader connections coexist with the tracker's writes;
+        # busy_timeout makes writers wait out short locks instead of raising
+        # (2026-06-12: a locked-database error killed the live tracker).
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA busy_timeout=10000")
         self._conn.executescript(SCHEMA)
         self._lock = threading.Lock()
 
