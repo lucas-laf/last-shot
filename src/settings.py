@@ -44,6 +44,9 @@ def load_settings(config_path: Path | None = None) -> dict[str, Any]:
         pk = "0x" + pk
     cfg["poly_private_key"] = pk
     cfg["poly_funder"] = os.getenv("POLY_FUNDER", "")
-    # 2 = browser-wallet proxy (user's setup), 1 = email/magic proxy, 0 = EOA
-    cfg["poly_signature_type"] = int(os.getenv("POLY_SIGNATURE_TYPE", "2"))
+    # Polymarket signature type. Post-CLOB-V2 the funded wallet is recognized
+    # as POLY_1271 / deposit-wallet style = 3 (verified: only sig_type 3 returns
+    # the on-chain pUSD balance from the CLOB). 2 = legacy browser proxy,
+    # 1 = email/magic proxy, 0 = EOA.
+    cfg["poly_signature_type"] = int(os.getenv("POLY_SIGNATURE_TYPE", "3"))
     return cfg

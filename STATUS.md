@@ -1,8 +1,6 @@
 # last_shot — project status & handoff
 
-_Last updated: 2026-06-13. Paused at user request (traveling; Polymarket
-geoblock encountered — see "Open decision" below). Paper trading and shadow
-measurement continue running; no live money at risk._
+
 
 ## What this is
 
@@ -59,43 +57,41 @@ Live box: EC2 `i-068384d6dcb71bee2`, t3.medium, eu-west-1 (Dublin), systemd
   `ArbExecutor` sizes both legs to min(displayed depth, cap); safety rails =
   ARMED=false default + `EXECUTOR_ARMED` env gate, per-outcome cap, daily capital
   cap, soccer/politics whitelist to start.
-- **Polymarket auth**: fully verified. Wallet-proxy (signature_type 2), key +
-  funder in `.env`, $117.98 PUSD funded, exchange allowances set (made a manual
-  $1 trade to install them). Balance/positions readable via API.
+- **Polymarket auth + V2**: fully verified end-to-end. Polymarket migrated to
+  **CLOB V2** (2026-04-28); we now run `py-clob-client-v2`. The funded wallet is
+  a **POLY_1271 / deposit-wallet (signature_type 3)** — only sig_type 3 returns
+  the on-chain balance from the CLOB. $117.98 held as **pUSD** (the V2 collateral
+  token, `0xC011…`) in `0x9bdb…a4c3`; V2 exchange allowances already unlimited
+  on-chain. A live order was placed + cancelled successfully (no `invalid order
+  version`). Balance/positions readable via API.
 - **AWS budgets**: $20/day + $40/month, email alerts. Run rate ~$0.60/day.
 - **VNC + Firefox** on the box for manual Polymarket access (tunnel :5901).
 
-## OPEN DECISION (the only blocker to going live)
 
-Order placement is **geoblocked from the user's current (traveling) connection**
-but **not from the Dublin EC2 box**. Before arming, confirm the jurisdiction
-basis is legitimate (user normally not UK-resident; verify account standing and
-that trading from the EC2 region is consistent with Polymarket's terms for the
-account holder). Routing around a geoblock that genuinely applies to the account
-holder risks **frozen/seized funds** — the single biggest financial risk in the
-project, far larger than any edge decay. **Do not arm the executor until this is
-resolved deliberately.**
 
 ## Next steps when resuming (in order)
 
-1. **Resolve the jurisdiction question** (above). Everything else is gated on it.
-2. **Fix the Polymarket order-builder for neg-risk markets**: live order test
-   returned `invalid order version` — our tracked markets route through PM's
-   neg-risk exchange contracts; `polymarket_executor.py` needs the neg-risk-aware
-   `create_order` path (and a non-neg-risk binary market for the first clean test).
-3. **Arm on soccer/politics only**, minimum stakes (£2/$3 legs), with the existing
+1. ~~**Fix the Polymarket order-builder for neg-risk markets**~~ — **DONE
+   2026-06-13.** The `invalid order version` error was misdiagnosed: it was the
+   **CLOB V2 migration**, not neg-risk. Migrated to `py-clob-client-v2`, fixed a
+   separate tick-size snapping bug (prices must sit on the 0.01/0.001 grid, not a
+   hardcoded 3-decimal round), and corrected signature_type 2→3. Verified with a
+   live placed-and-cancelled order. Test harness: `scripts/place_test_order.py`
+   (dry-run default, `--arm` to send). Allowance helper: `scripts/set_v2_allowances.py`
+   (not needed — V2 approvals already set on-chain).
+2. **Arm on soccer/politics only**, minimum stakes (£2/$3 legs), with the existing
    caps scaled to the ~$100 float. Add a min-notional filter so the executor skips
    arbs the float can't cover (Betfair £2 min stake).
-4. **Add both-legs-or-unwind handling** (Phase B): fire PM leg first (the stale
+3. **Add both-legs-or-unwind handling** (Phase B): fire PM leg first (the stale
    side), hedge on Betfair; auto-unwind if only one leg fills. This is the real
    leg-risk safety and must exist before tennis.
-5. **Measure real tennis capture rate** at min stakes for ~1 week — the number
+4. **Measure real tennis capture rate** at min stakes for ~1 week — the number
    that decides whether the bulk of the opportunity (fast tennis windows) is
    actually harvestable. Compare against the shadow curve.
-6. **Build maker-side mode** (`analysis/maker_sniper_backtest.py` is the spec):
+5. **Build maker-side mode** (`analysis/maker_sniper_backtest.py` is the spec):
    the higher-capacity, latency-tolerant path; likely the real business if taker
    capture disappoints.
-7. **Add a per-outcome trade cap** to the paper trader regardless — the cooldown
+6. **Add a per-outcome trade cap** to the paper trader regardless — the cooldown
    re-fires up to ~100x on one outcome, which distorted convergence dollar P&L and
    would concentrate live risk.
 
@@ -113,4 +109,4 @@ ssh -i ~/.ssh/lastshot.pem ubuntu@<ec2-ip> "systemctl status lastshot-tracker"
 aws ec2 describe-instances --region eu-west-1 --instance-ids i-068384d6dcb71bee2 \
   --query "Reservations[0].Instances[0].PublicIpAddress" --output text
 ```
-(Project memory with deeper detail lives in the laptop's Claude memory dir.)
+

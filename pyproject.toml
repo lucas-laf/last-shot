@@ -18,8 +18,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]
-# live Polymarket order placement only; shadow mode needs none of this
-exec = ["py-clob-client>=0.17"]
+# live Polymarket order placement only; shadow mode needs none of this.
+# CLOB V2 (post 2026-04-28 migration); the V1 py-clob-client is archived/dead.
+exec = ["py-clob-client-v2>=1.0.1"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
