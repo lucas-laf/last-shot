@@ -95,6 +95,29 @@ Live box: EC2 `i-068384d6dcb71bee2`, t3.medium, eu-west-1 (Dublin), systemd
    re-fires up to ~100x on one outcome, which distorted convergence dollar P&L and
    would concentrate live risk.
 
+## Deferred refinements (noted, not blocking)
+
+- **Polymarket fee model is conservative (overstates fees).** The signal engine
+  (`src/signals/fees.py`) charges the PM taker fee as `rate · min(p, 1−p)` per
+  share. The actual CLOB **V2** fee (`adjust_buy_amount_for_fees`, and the
+  per-market `fd` block: `{r, e, to}`) is `rate · (p·(1−p))^e` with exponent
+  `e = 1` on every market checked — i.e. `rate · p·(1−p)`. The **rates match**
+  (Gamma `feeSchedule.rate` == CLOB `fd.r`: soccer/tennis/baseball 0.03, crypto
+  0.07, entertainment 0.05, politics 0). Only the **functional form** differs:
+  since `p·(1−p) ≤ min(p, 1−p)` always, the paper model charges **more** than
+  reality — up to ~2× near p=0.5, ~equal at the extremes. Consequences:
+    - Live should be **no worse than paper on fees** (modestly better near even
+      markets) — so this is a safe direction to leave as-is.
+    - But the engine **over-filters**: some near-50/50 arbs that clear the real
+      fee are rejected at the `min_edge` gate, and `edge_after_fees` is slightly
+      understated on near-even trades. The realized lock_arb verdict (settlement
+      P&L) is unaffected.
+  - **Fix when revisited:** change `polymarket_buy`/`polymarket_sell` to
+    `rate · (p·(1−p))^e`, and source `r`/`e` from the CLOB `fd` block (the
+    authoritative match-time fee) rather than Gamma's `feeSchedule`. This is a
+    behaviour-changing edit to the signal engine (more near-even arbs fire), so
+    do it deliberately, not as a drive-by.
+
 ## Useful commands
 
 ```bash
