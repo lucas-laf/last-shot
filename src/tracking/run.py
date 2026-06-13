@@ -18,7 +18,6 @@ from ..execution.polymarket_executor import PolymarketExecutor
 from ..models import MatchStatus, Platform, Tick
 from ..settings import load_settings
 from ..signals.engine import PairState, SignalEngine
-from ..signals.paper_trader import PaperTrader
 from ..storage import Store, TickWriter
 from .betfair_stream import BetfairFeed
 from .polymarket_ws import PolymarketFeed
@@ -106,14 +105,9 @@ async def main() -> None:
         {s.polymarket_token_id: s.polymarket_market_id for s in states},
         on_tick, backoff,
     )
-    trader = PaperTrader(
-        store=store,
-        max_stake=cfg["signals"]["max_paper_stake"],
-        betfair_depth=bf_feed.depth,
-        polymarket_depth=pm_feed.depth,
-        max_trades_per_outcome=cfg["signals"].get("max_paper_trades_per_outcome", 3),
-    )
-
+    # Paper trading dropped 2026-06-13: the executor is live (armed soak), so the
+    # hypothetical paper trades are redundant noise. Shadow capture + live_trades
+    # are the measurement now. (PaperTrader remains available for offline replay.)
     ex = cfg.get("execution", {})
     rtt = RttMonitor(store, session_token=client.session_token or "",
                      app_key=client.app_key)
@@ -139,7 +133,6 @@ async def main() -> None:
     )
 
     def on_signal(sig):
-        trader.on_signal(sig)
         arb_exec.on_signal(sig)
 
     engine.on_signal = on_signal
