@@ -13,12 +13,33 @@ import asyncio
 import logging
 import math
 import time
+from dataclasses import dataclass
 
 from betfairlightweight import APIClient, filters
 
 from ..storage import Store
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class BfFill:
+    """Outcome of a Betfair FOK hedge. matched_stake is GBP matched."""
+    matched_stake: float
+    avg_odds: float | None
+    status: str
+
+    def matched_enough(self, required_stake: float, eps: float = 0.01) -> bool:
+        return self.matched_stake >= required_stake - eps
+
+
+def _requested(order: dict) -> tuple[float, float | None]:
+    """(size_gbp, odds) requested in a built order; (0, None) if malformed."""
+    try:
+        lo = order["instructions"][0]["limitOrder"]
+        return float(lo["size"]), float(lo["price"])
+    except (KeyError, IndexError, TypeError, ValueError):
+        return 0.0, None
 
 # Betfair decimal-odds tick ladder: (upper_bound, increment)
 LADDER = [
@@ -55,6 +76,9 @@ class BetfairExecutor:
         self.store = store
         self.armed = armed
         self.min_stake = min_stake_gbp
+        # dry-run only: force the hedge to look killed (STATE C). Read only when
+        # not armed; production armed runs ignore it.
+        self._sim_killed: bool = False
 
     async def keep_alive_loop(self, interval_s: float = 3600.0) -> None:
         while True:
@@ -108,3 +132,18 @@ class BetfairExecutor:
         self.store.save_exec_event("betfair_order", ack if not ack.get("dry_run")
                                    else {k: v for k, v in ack.items() if k != "order"})
         return ack
+
+    def parse_fill(self, ack: dict) -> BfFill:
+        """Read the matched stake from a place() ack. FOK means complete-or-
+        killed (no partials). In dry-run, simulate a complete fill unless
+        _sim_killed forces the naked-leg (STATE C) path."""
+        if ack.get("dry_run") or ack.get("status") == "SHADOW":
+            req, odds = _requested(ack.get("order", {}))
+            if self._sim_killed:
+                return BfFill(0.0, None, "SIM_KILLED")
+            return BfFill(req, odds, "SIM_COMPLETE")
+        return BfFill(
+            matched_stake=float(ack.get("size_matched") or 0.0),
+            avg_odds=ack.get("price_matched"),
+            status=str(ack.get("order_status") or ack.get("status") or ""),
+        )

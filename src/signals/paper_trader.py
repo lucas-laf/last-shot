@@ -20,14 +20,24 @@ class PaperTrader:
         max_stake: float,
         betfair_depth: Callable[[str, str], dict],
         polymarket_depth: Callable[[str], dict],
+        max_trades_per_outcome: int = 3,
     ):
         self.store = store
         self.max_stake = max_stake
         self.betfair_depth = betfair_depth
         self.polymarket_depth = polymarket_depth
+        # The engine cooldown is per signal-key, so a churning book re-fires the
+        # same outcome many times (STATUS: ~100x), distorting dollar P&L and
+        # concentrating risk. Cap recorded trades per outcome.
+        self.max_trades_per_outcome = max_trades_per_outcome
+        self._trades_by_outcome: dict[tuple, int] = {}
 
     def on_signal(self, sig: Signal) -> None:
         s = sig.state
+        outcome = (s.betfair_market_id, s.polymarket_market_id, s.outcome_name)
+        if self._trades_by_outcome.get(outcome, 0) >= self.max_trades_per_outcome:
+            return
+
         bf_book = self.betfair_depth(s.betfair_market_id, s.betfair_selection_id)
         pm_book = self.polymarket_depth(s.polymarket_token_id)
 
@@ -36,6 +46,8 @@ class PaperTrader:
         stake = min(self.max_stake, displayed) if displayed > 0 else 0.0
         if stake <= 0:
             return
+
+        self._trades_by_outcome[outcome] = self._trades_by_outcome.get(outcome, 0) + 1
 
         self.store.save_paper_trade(PaperTrade(
             ts=datetime.now(timezone.utc),

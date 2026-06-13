@@ -108,6 +108,7 @@ async def main() -> None:
         max_stake=cfg["signals"]["max_paper_stake"],
         betfair_depth=bf_feed.depth,
         polymarket_depth=pm_feed.depth,
+        max_trades_per_outcome=cfg["signals"].get("max_paper_trades_per_outcome", 3),
     )
 
     ex = cfg.get("execution", {})
@@ -128,6 +129,10 @@ async def main() -> None:
         max_shares_per_leg=ex.get("max_shares_per_leg", 5.0),
         max_arbs_per_outcome=ex.get("max_arbs_per_outcome", 1),
         max_daily_capital=ex.get("max_daily_capital", 50.0),
+        one_shot=ex.get("one_shot", True),
+        max_live_arbs=ex.get("max_live_arbs", 1),
+        min_pm_notional=ex.get("min_pm_notional", 3.0),
+        min_bf_stake_gbp=ex.get("min_bf_stake_gbp", 2.0),
     )
 
     def on_signal(sig):

@@ -95,6 +95,40 @@ CREATE TABLE IF NOT EXISTS exec_events (
     kind TEXT NOT NULL,               -- rtt_betfair | rtt_polymarket | order | ...
     payload_json TEXT
 );
+
+CREATE TABLE IF NOT EXISTS live_trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    decision_ts TEXT NOT NULL,
+    betfair_market_id TEXT,
+    polymarket_market_id TEXT,
+    outcome_name TEXT,
+    category TEXT,
+    -- Polymarket (initiating) leg
+    pm_side TEXT,
+    pm_intended_price REAL,
+    pm_intended_size REAL,            -- shares
+    pm_filled_price REAL,
+    pm_filled_size REAL,
+    pm_fill_source TEXT,              -- post_response | get_order | get_trades | shadow
+    -- Betfair (hedge) leg
+    bf_side TEXT,
+    bf_intended_price REAL,
+    bf_intended_stake REAL,           -- GBP
+    bf_filled_price REAL,
+    bf_filled_stake REAL,
+    -- outcome
+    pair_status TEXT,                 -- pending | neither | locked | unwound | error
+    unwind_cost REAL,                 -- signed GBP-equiv cost of a flatten
+    edge_intended REAL,
+    edge_realized REAL,               -- locked-in edge from actual fills (NULL unless locked)
+    -- timing
+    decide_us REAL,                   -- signal -> order-ready, microseconds
+    pm_rtt_ms REAL,
+    bf_rtt_ms REAL,
+    pm_to_bf_gap_ms REAL,             -- PM fill -> Betfair order sent (the leg-risk window)
+    total_ms REAL,
+    resolved_ts TEXT
+);
 """
 
 
@@ -278,6 +312,38 @@ class Store:
                 "INSERT INTO exec_events (ts, kind, payload_json) VALUES (?,?,?)",
                 (datetime.now(timezone.utc).isoformat(), kind, json.dumps(payload)),
             )
+
+    # ---------- live trades (Phase B) ----------
+
+    _LIVE_TRADE_COLS = (
+        "decision_ts", "betfair_market_id", "polymarket_market_id", "outcome_name",
+        "category", "pm_side", "pm_intended_price", "pm_intended_size",
+        "pm_filled_price", "pm_filled_size", "pm_fill_source", "bf_side",
+        "bf_intended_price", "bf_intended_stake", "bf_filled_price", "bf_filled_stake",
+        "pair_status", "unwind_cost", "edge_intended", "edge_realized", "decide_us",
+        "pm_rtt_ms", "bf_rtt_ms", "pm_to_bf_gap_ms", "total_ms", "resolved_ts",
+    )
+
+    def save_live_trade(self, row: dict) -> int:
+        """Insert a live arb record (two-phase: insert at PM fill, update on
+        resolve). Only known columns from `row` are written."""
+        cols = [c for c in self._LIVE_TRADE_COLS if c in row]
+        placeholders = ",".join(f":{c}" for c in cols)
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                f"INSERT INTO live_trades ({','.join(cols)}) VALUES ({placeholders})",
+                {c: row[c] for c in cols},
+            )
+            return cur.lastrowid
+
+    def update_live_trade(self, trade_id: int, **fields) -> None:
+        allowed = {k: v for k, v in fields.items() if k in self._LIVE_TRADE_COLS}
+        allowed.setdefault("resolved_ts", datetime.now(timezone.utc).isoformat())
+        sets = ",".join(f"{k}=:{k}" for k in allowed)
+        params = {**allowed, "_id": trade_id}
+        with self._lock, self._conn:
+            self._conn.execute(
+                f"UPDATE live_trades SET {sets} WHERE id=:_id", params)
 
 
 class TickWriter:

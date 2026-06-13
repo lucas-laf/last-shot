@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 
 from ..storage import Store
 
@@ -36,11 +37,33 @@ CLOB_HOST = "https://clob.polymarket.com"
 POLYGON_CHAIN_ID = 137
 
 
+def _num(v) -> float | None:
+    """Best-effort float; None if missing/unparseable."""
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+@dataclass
+class FillResult:
+    """Outcome of confirming a Polymarket FOK order. size is in shares."""
+    size: float
+    avg_price: float
+    source: str        # post_response | get_order | shadow
+    raw: dict
+
+
 class PolymarketExecutor:
     def __init__(self, store: Store, private_key: str = "", funder: str = "",
                  armed: bool = False, signature_type: int = 2):
         self.store = store
         self.armed = armed and bool(private_key)
+        # dry-run only: simulate a fractional fill in confirm_fill (None -> full
+        # fill). Read only when not armed; production armed runs ignore it.
+        self._sim_fill_fraction: float | None = None
         self._client = None
         if private_key:
             from py_clob_client_v2.client import ClobClient  # lazy: heavy deps
@@ -132,11 +155,68 @@ class PolymarketExecutor:
             ot = OrderType.GTC if order_type == "GTC" else OrderType.FOK
             resp = await asyncio.to_thread(self._client.post_order, signed, ot)
             ack |= {"dry_run": False, "sent": True, "status": resp.get("status"),
-                    "order_id": resp.get("orderID"), "error": resp.get("errorMsg")}
+                    "order_id": resp.get("orderID"), "error": resp.get("errorMsg"),
+                    "resp": resp}
 
         ack["rtt_ms"] = (time.perf_counter_ns() - t0) / 1e6
         self.store.save_exec_event("polymarket_order", ack)
         return ack
+
+    async def confirm_fill(self, place_ack: dict) -> FillResult:
+        """Resolve how many shares a FOK order actually matched.
+
+        Fast path parses the post_order response (size_matched, if present);
+        otherwise falls back to get_order with a hard cap of 2 quick polls (FOK
+        reaches a terminal state immediately, so this is just for eventual
+        consistency). Biased to *verify* rather than assume zero — we never
+        declare a no-fill on an inconclusive response without a get_order check,
+        so we can't carry an undetected naked leg. The PM-fill->confirm latency
+        IS the leg-risk window, so this stays bounded.
+        """
+        order = place_ack.get("order", {}) or {}
+        intended_size = float(order.get("size", 0.0) or 0.0)
+        px = _num(place_ack.get("snapped_price")) or _num(order.get("price")) or 0.0
+        status = place_ack.get("status")
+
+        # Dry-run / shadow / no creds: simulate a fill so the whole state machine
+        # is exercisable without real money.
+        if (self._client is None or place_ack.get("dry_run")
+                or status in ("SHADOW", "BUILT_NOT_SENT")):
+            frac = 1.0 if self._sim_fill_fraction is None else self._sim_fill_fraction
+            return FillResult(size=round(intended_size * frac, 2), avg_price=px,
+                              source="shadow", raw=place_ack)
+
+        import asyncio
+
+        # Fast path: matched size already in the post response.
+        resp = place_ack.get("resp") or {}
+        sm = _num(resp.get("size_matched")) or _num(resp.get("sizeMatched"))
+        if sm is not None:
+            return FillResult(size=sm, avg_price=_num(resp.get("price")) or px,
+                              source="post_response", raw=resp)
+
+        # Fallback: poll get_order (<=2 quick attempts).
+        oid = place_ack.get("order_id")
+        if not oid:
+            return FillResult(size=0.0, avg_price=px, source="post_response", raw=resp)
+        terminal = {"MATCHED", "FILLED", "CANCELED", "CANCELLED", "UNMATCHED", "KILLED"}
+        last: dict = {}
+        for attempt in range(2):
+            try:
+                last = await asyncio.to_thread(self._client.get_order, oid) or {}
+            except Exception as e:  # noqa: BLE001 — confirmation must not crash the arb
+                logger.warning("get_order failed (attempt %d): %s", attempt, e)
+                last = {}
+            sm = _num(last.get("size_matched")) or _num(last.get("sizeMatched"))
+            st = str(last.get("status", "")).upper()
+            if sm is not None and (sm > 0 or st in terminal):
+                return FillResult(size=sm, avg_price=_num(last.get("price")) or px,
+                                  source="get_order", raw=last)
+            if attempt == 0:
+                await asyncio.sleep(0.15)
+        sm = _num(last.get("size_matched")) or _num(last.get("sizeMatched")) or 0.0
+        return FillResult(size=sm, avg_price=_num(last.get("price")) or px,
+                          source="get_order", raw=last)
 
     async def cancel(self, order_id: str) -> dict:
         """Cancel a resting order by id (used to clean up test orders)."""

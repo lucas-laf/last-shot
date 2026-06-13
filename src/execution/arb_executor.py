@@ -20,6 +20,7 @@ daily deployed-capital cap, and ARMED defaults to false everywhere.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -48,6 +49,26 @@ class PendingShadow:
     executable: bool = True    # last view of the book vs our target
 
 
+@dataclass(frozen=True)
+class ArbPlan:
+    """Immutable snapshot of one arb to execute. Never hold a live PairState —
+    it mutates on every tick between scheduling and execution."""
+    pm_token_id: str
+    pm_market_id: str
+    pm_side: str               # buy | sell on the PM YES token
+    pm_price: float            # raw book price we'd cross
+    bf_market_id: str
+    bf_selection_id: str
+    bf_side: str               # buy (BACK) | sell (LAY)
+    bf_price: float
+    shares: float
+    category: str
+    outcome_name: str
+    edge: float
+    decide_us: float | None
+    decision_ts: str
+
+
 @dataclass
 class ArbExecutor:
     store: Store
@@ -60,10 +81,20 @@ class ArbExecutor:
     max_shares_per_leg: float = 5.0
     max_arbs_per_outcome: int = 1
     max_daily_capital: float = 50.0
+    one_shot: bool = True                  # fire one real arb then auto-disarm
+    max_live_arbs: int = 1                  # hard cap on real arbs
+    min_pm_notional: float = 3.0            # skip live arbs the float can't cover
+    min_bf_stake_gbp: float = 2.0
     _pending: dict[tuple, list] = field(default_factory=dict)
     _arbs_by_outcome: dict[tuple, int] = field(default_factory=dict)
     _capital_day: str = ""
     _capital_used: float = 0.0
+    _live_count: int = 0                    # real arbs actually sent (PM posted)
+    _live_inflight: bool = False            # one arb executing at a time
+    _live_lock: object = None
+
+    def __post_init__(self) -> None:
+        self._live_lock = asyncio.Lock()
 
     # ---------- signal entry ----------
 
@@ -82,11 +113,15 @@ class ArbExecutor:
             sell_key = (Platform.POLYMARKET.value, s.polymarket_market_id, s.polymarket_token_id)
             buy_price, buy_size = s.bf.ask, s.bf.ask_size
             sell_price, sell_size = s.pm.bid, s.pm.bid_size
+            bf_side, bf_price = "buy", s.bf.ask
+            pm_side, pm_price = "sell", s.pm.bid
         else:
             buy_key = (Platform.POLYMARKET.value, s.polymarket_market_id, s.polymarket_token_id)
             sell_key = (Platform.BETFAIR.value, s.betfair_market_id, s.betfair_selection_id)
             buy_price, buy_size = s.pm.ask, s.pm.ask_size
             sell_price, sell_size = s.bf.bid, s.bf.bid_size
+            pm_side, pm_price = "buy", s.pm.ask
+            bf_side, bf_price = "sell", s.bf.bid
 
         shares = min(buy_size, sell_size, self.max_shares_per_leg)
         if shares <= 0:
@@ -98,9 +133,17 @@ class ArbExecutor:
             return
         self._arbs_by_outcome[outcome] = self._arbs_by_outcome.get(outcome, 0) + 1
 
+        # Min-notional: skip the *live* path (still record shadows) if either
+        # leg can't meet its venue minimum — build_order's max(size,min) clamp
+        # would otherwise silently over-spend.
+        pm_notional = shares * pm_price
+        bf_stake = shares * bf_price
+        notional_ok = (pm_notional >= self.min_pm_notional
+                       and bf_stake >= self.min_bf_stake_gbp)
+
         category = self.categories.get(s.betfair_market_id, "?")
         go_live = (self.armed and category in self.live_categories
-                   and self._capital_ok(shares))
+                   and notional_ok and self._capital_ok(shares))
         h.mark("decision")
 
         for key, side, price in ((buy_key, "buy", buy_price),
@@ -110,17 +153,176 @@ class ArbExecutor:
             self._record_shadow(s, key, side, price, shares, rtt, h)
         h.mark("shadow_recorded")
 
-        if go_live:
-            # Live path is wired but gated: PM leg first (the stale side),
-            # then the Betfair hedge. Full leg-risk handling (unwind on a
-            # one-legged fill) lands with Phase B before arming.
-            logger.warning("ARMED arb suppressed pending Phase B leg-risk handling: %s",
-                           s.outcome_name)
+        # One-shot gate: check-then-claim the single slot synchronously (no await
+        # before _live_inflight=True), so the cap is race-free on the loop thread.
+        if go_live and self._should_fire_live():
+            self._live_inflight = True
+            plan = ArbPlan(
+                pm_token_id=s.polymarket_token_id, pm_market_id=s.polymarket_market_id,
+                pm_side=pm_side, pm_price=pm_price,
+                bf_market_id=s.betfair_market_id, bf_selection_id=s.betfair_selection_id,
+                bf_side=bf_side, bf_price=bf_price, shares=shares, category=category,
+                outcome_name=s.outcome_name, edge=sig.edge_after_fees,
+                decide_us=h.us("decision"),
+                decision_ts=datetime.now(timezone.utc).isoformat(),
+            )
+            self._launch(self._execute_live(plan))
 
         self.store.save_exec_event("arb_decision", {
             "outcome": s.outcome_name, "category": category, "shares": shares,
-            "edge": sig.edge_after_fees, "armed": go_live, "hops_us": h.as_dict(),
+            "edge": sig.edge_after_fees, "armed": go_live,
+            "min_notional_ok": notional_ok, "hops_us": h.as_dict(),
         })
+
+    # ---------- live execution (Phase B) ----------
+
+    def _should_fire_live(self) -> bool:
+        return (self.armed and not self._live_inflight
+                and self._live_count < self.max_live_arbs)
+
+    def _launch(self, coro) -> None:
+        """Schedule the async arb on the running loop. on_signal runs on the
+        loop thread (via the tracker's on_tick coroutine), so a loop exists in
+        production; in tests without a loop we skip and release the slot."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.error("no running loop; cannot fire live arb")
+            self._live_inflight = False
+            coro.close()
+            return
+        loop.create_task(coro)
+
+    def _disarm(self) -> None:
+        self.armed = False
+        self.bf_exec.armed = False
+        self.pm_exec.armed = False
+        logger.warning("ONE-SHOT COMPLETE — executor auto-disarmed after %d live arb(s)",
+                       self._live_count)
+        self.store.save_exec_event("auto_disarm", {"live_count": self._live_count})
+
+    async def _execute_live(self, plan: ArbPlan) -> None:
+        """PM leg first (perishable side) → hedge on Betfair sized to the ACTUAL
+        PM fill → flatten PM if the hedge is killed (naked leg). Always writes
+        exactly one live_trades row; never leaves silent naked exposure."""
+        async with self._live_lock:
+            t0 = time.perf_counter()
+            trade_id = None
+            base = {
+                "decision_ts": plan.decision_ts,
+                "betfair_market_id": plan.bf_market_id,
+                "polymarket_market_id": plan.pm_market_id,
+                "outcome_name": plan.outcome_name, "category": plan.category,
+                "pm_side": plan.pm_side, "pm_intended_price": plan.pm_price,
+                "pm_intended_size": plan.shares, "bf_side": plan.bf_side,
+                "bf_intended_price": plan.bf_price,
+                "bf_intended_stake": round(plan.shares * plan.bf_price, 2),
+                "edge_intended": plan.edge, "decide_us": plan.decide_us,
+            }
+            try:
+                pm_order = self.pm_exec.build_order(
+                    plan.pm_token_id, plan.pm_side, plan.pm_price, plan.shares)
+                ack_pm = await self.pm_exec.place(pm_order, order_type="FOK")
+                t_pm = time.perf_counter()
+                fill = await self.pm_exec.confirm_fill(ack_pm)
+                base |= {"pm_filled_price": fill.avg_price, "pm_filled_size": fill.size,
+                         "pm_fill_source": fill.source, "pm_rtt_ms": ack_pm.get("rtt_ms")}
+
+                if fill.size <= 0:                                   # STATE A
+                    base |= {"pair_status": "neither",
+                             "total_ms": (time.perf_counter() - t0) * 1e3}
+                    self.store.save_live_trade(base)
+                    logger.info("ARB STATE A — PM killed, no fill: %s", plan.outcome_name)
+                    return
+
+                # PM filled → money has moved. Consume the shot + disarm now.
+                self._live_count += 1
+                base["pair_status"] = "pending"
+                trade_id = self.store.save_live_trade(base)
+                if self.one_shot and self._live_count >= self.max_live_arbs:
+                    self._disarm()
+
+                hedge_stake = round(fill.size * plan.bf_price, 2)
+                # leg-risk window: PM fill confirmed -> Betfair order about to send
+                gap_ms = (time.perf_counter() - t_pm) * 1e3
+                if hedge_stake < self.min_bf_stake_gbp - 1e-9:
+                    logger.warning("hedge stake £%.2f < min; unwinding PM", hedge_stake)
+                    uw = await self._unwind_pm(plan, fill)
+                    self._record_unwound(trade_id, gap_ms, t0, uw, bf=None, bf_rtt=None)
+                    return
+
+                bf_order = self.bf_exec.build_order(
+                    plan.bf_market_id, plan.bf_selection_id, plan.bf_side,
+                    plan.bf_price, hedge_stake)
+                ack_bf = await self.bf_exec.place(bf_order)
+                bf = self.bf_exec.parse_fill(ack_bf)
+
+                if bf.matched_enough(hedge_stake):                   # STATE B: locked
+                    self.store.update_live_trade(
+                        trade_id, pair_status="locked",
+                        bf_filled_stake=bf.matched_stake,
+                        bf_filled_price=(1.0 / bf.avg_odds) if bf.avg_odds else plan.bf_price,
+                        pm_to_bf_gap_ms=gap_ms, bf_rtt_ms=ack_bf.get("rtt_ms"),
+                        edge_realized=plan.edge,
+                        total_ms=(time.perf_counter() - t0) * 1e3)
+                    logger.info("ARB STATE B — LOCKED: %s shares=%.2f gap=%.0fms",
+                                plan.outcome_name, fill.size, gap_ms)
+                else:                                                # STATE C: unwind
+                    uw = await self._unwind_pm(plan, fill)
+                    self._record_unwound(trade_id, gap_ms, t0, uw, bf=bf,
+                                         bf_rtt=ack_bf.get("rtt_ms"))
+            except Exception as e:  # noqa: BLE001 — never leave silent exposure
+                logger.exception("live arb errored: %s", plan.outcome_name)
+                self.store.save_exec_event(
+                    "unwind_alert", {"outcome": plan.outcome_name, "error": str(e)})
+                if trade_id is not None:
+                    self.store.update_live_trade(trade_id, pair_status="error")
+                else:
+                    self.store.save_live_trade({**base, "pair_status": "error"})
+            finally:
+                self._live_inflight = False
+
+    async def _unwind_pm(self, plan: ArbPlan, fill) -> dict:
+        """Immediate flatten: marketable reverse FOK sized to the PM fill. On
+        failure, rest a reverse limit and raise an alert (never silent naked)."""
+        reverse = "sell" if plan.pm_side == "buy" else "buy"
+        # Cross aggressively: a limit at the far extreme fills against the touch
+        # (Polymarket fills marketable limits at the resting maker price).
+        rev_price = 0.99 if reverse == "buy" else 0.01
+        order = self.pm_exec.build_order(plan.pm_token_id, reverse, rev_price, fill.size)
+        ack = await self.pm_exec.place(order, order_type="FOK")
+        close = await self.pm_exec.confirm_fill(ack)
+        if close.size >= fill.size - 1e-6:
+            cost = self._unwind_cost(plan.pm_side, fill.avg_price, close.avg_price, fill.size)
+            self.store.save_exec_event("unwind", {
+                "outcome": plan.outcome_name, "flattened": True,
+                "size": close.size, "cost": cost})
+            return {"flattened": True, "cost": cost, "close": close}
+        # fallback: resting reverse + alert
+        rest = self.pm_exec.build_order(plan.pm_token_id, reverse, rev_price, fill.size)
+        rest_ack = await self.pm_exec.place(rest, order_type="GTC")
+        naked = fill.size - close.size
+        self.store.save_exec_event("unwind_alert", {
+            "outcome": plan.outcome_name, "flattened": False,
+            "naked_size": naked, "resting_order": rest_ack.get("order_id")})
+        logger.error("UNWIND INCOMPLETE — naked PM %.2f shares; resting reverse placed", naked)
+        return {"flattened": False, "cost": None, "close": close}
+
+    @staticmethod
+    def _unwind_cost(pm_side: str, open_px: float, close_px: float, size: float) -> float:
+        """Signed £-equiv cost of a flatten (positive = loss)."""
+        if pm_side == "buy":          # bought at open, sold to close
+            return round((open_px - close_px) * size, 4)
+        return round((close_px - open_px) * size, 4)  # sold at open, bought to close
+
+    def _record_unwound(self, trade_id, gap_ms, t0, uw: dict, bf, bf_rtt) -> None:
+        self.store.update_live_trade(
+            trade_id, pair_status="unwound", pm_to_bf_gap_ms=gap_ms,
+            unwind_cost=uw.get("cost"),
+            bf_filled_stake=(bf.matched_stake if bf else 0.0),
+            bf_rtt_ms=bf_rtt, total_ms=(time.perf_counter() - t0) * 1e3)
+        logger.warning("ARB STATE C — unwound (flattened=%s, cost=%s)",
+                       uw.get("flattened"), uw.get("cost"))
 
     def _capital_ok(self, shares: float) -> bool:
         day = datetime.now(timezone.utc).date().isoformat()
