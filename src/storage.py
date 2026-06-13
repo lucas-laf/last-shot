@@ -138,7 +138,13 @@ CREATE TABLE IF NOT EXISTS live_trades (
     bf_result TEXT,
     realized_pnl REAL,
     divergence INTEGER,               -- 1 if legs settled inconsistently (e.g. one void, one paid)
-    settled_ts TEXT
+    settled_ts TEXT,
+    -- maker-side fields (NULL/0 for taker arbs)
+    is_maker INTEGER DEFAULT 0,
+    resting_order_id TEXT,
+    time_resting_ms REAL,             -- how long our quote rested before fill
+    reprice_count INTEGER,
+    poll_s REAL                       -- fill-poll cadence (pm_to_bf_gap_ms is poll-dominated)
 );
 """
 
@@ -148,6 +154,8 @@ _LIVE_TRADE_MIGRATIONS = [
     ("pm_token_id", "TEXT"), ("pm_is_short", "INTEGER"), ("bf_selection_id", "TEXT"),
     ("settled", "INTEGER DEFAULT 0"), ("pm_result", "TEXT"), ("bf_result", "TEXT"),
     ("realized_pnl", "REAL"), ("divergence", "INTEGER"), ("settled_ts", "TEXT"),
+    ("is_maker", "INTEGER DEFAULT 0"), ("resting_order_id", "TEXT"),
+    ("time_resting_ms", "REAL"), ("reprice_count", "INTEGER"), ("poll_s", "REAL"),
 ]
 
 
@@ -351,6 +359,7 @@ class Store:
         "pm_rtt_ms", "bf_rtt_ms", "pm_to_bf_gap_ms", "total_ms", "resolved_ts",
         "pm_token_id", "pm_is_short", "bf_selection_id", "settled", "pm_result",
         "bf_result", "realized_pnl", "divergence", "settled_ts",
+        "is_maker", "resting_order_id", "time_resting_ms", "reprice_count", "poll_s",
     )
 
     def save_live_trade(self, row: dict) -> int:

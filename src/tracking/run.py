@@ -14,6 +14,7 @@ from ..betfair_client import make_client
 from ..execution.arb_executor import ArbExecutor
 from ..execution.betfair_executor import BetfairExecutor
 from ..execution.latency import RttMonitor
+from ..execution.maker_executor import MakerExecutor
 from ..execution.polymarket_executor import PolymarketExecutor
 from ..models import MatchStatus, Platform, Tick
 from ..settings import load_settings
@@ -137,6 +138,30 @@ async def main() -> None:
 
     engine.on_signal = on_signal
 
+    # Maker-side executor (optional): rests passive PM quotes, hedges on fill.
+    # Shares the same bf/pm executors (armed state + Betfair session) as the taker.
+    mk = ex.get("maker", {})
+    maker = None
+    if mk.get("enabled"):
+        maker = MakerExecutor(
+            states=states, bf_exec=arb_exec.bf_exec, pm_exec=arb_exec.pm_exec,
+            store=store, rtt=rtt, categories=arb_exec.categories,
+            armed=ex.get("armed", False),
+            commission=cfg["signals"]["betfair_commission"],
+            margin=mk.get("margin", 0.01), refresh_s=mk.get("refresh_s", 0.5),
+            poll_s=mk.get("poll_s", 0.5), cancel_stale_s=mk.get("cancel_stale_s", 3.0),
+            reprice_eps=mk.get("reprice_eps", 0.01),
+            max_open_quotes=mk.get("max_open_quotes", 8),
+            quote_shares=mk.get("quote_shares", 5.0),
+            min_quote_shares=mk.get("min_quote_shares", 2.0),
+            one_shot=mk.get("one_shot", True), max_live_arbs=mk.get("max_live_arbs", 1),
+            live_categories=tuple(mk.get("categories", ["tennis"])),
+            float_usd=mk.get("float_usd", 80.0),
+            min_pm_notional=ex.get("min_pm_notional", 1.0),
+            min_bf_stake_gbp=ex.get("min_bf_stake_gbp", 2.0))
+        logger.info("MakerExecutor enabled (categories=%s, margin=%.4f, one_shot=%s)",
+                    maker.live_categories, maker.margin, maker.one_shot)
+
     async def status() -> None:
         while True:
             await asyncio.sleep(args.status_every)
@@ -152,11 +177,16 @@ async def main() -> None:
                         len(live), len(states), "\n".join(lines))
             writer.flush()
 
+    coros = [bf_feed.run(), pm_feed.run(), status(),
+             rtt.run(), arb_exec.bf_exec.keep_alive_loop()]
+    if maker:
+        coros += [maker.quoting_loop(), maker.fill_poll_loop()]
     try:
-        await asyncio.gather(bf_feed.run(), pm_feed.run(), status(),
-                             rtt.run(), arb_exec.bf_exec.keep_alive_loop())
+        await asyncio.gather(*coros)
     finally:
         writer.flush()
+        if maker:
+            await maker.cancel_all()   # never leave a resting order live
 
 
 if __name__ == "__main__":

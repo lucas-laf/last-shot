@@ -251,3 +251,27 @@ class PolymarketExecutor:
         ack = {"cancelled": True, "order_id": order_id, "resp": resp}
         self.store.save_exec_event("polymarket_cancel", ack)
         return ack
+
+    async def get_order(self, order_id: str) -> dict:
+        """Raw CLOB order record (for polling resting-order fills). The maker
+        side has no fill websocket, so it polls this. {} if no client/order."""
+        if self._client is None or not order_id:
+            return {}
+        import asyncio
+        try:
+            return await asyncio.to_thread(self._client.get_order, order_id) or {}
+        except Exception as e:  # noqa: BLE001 — polling must not crash the loop
+            logger.warning("get_order(%s) failed: %s", str(order_id)[:14], e)
+            return {}
+
+    async def cancel_all(self, order_ids: list[str]) -> int:
+        """Best-effort cancel of the given resting orders. Returns count cancelled.
+        Used as the maker safety rail (disarm / shutdown / stale)."""
+        n = 0
+        for oid in list(order_ids):
+            try:
+                ack = await self.cancel(oid)
+                n += int(bool(ack.get("cancelled")))
+            except Exception as e:  # noqa: BLE001 — never let one failure block the rest
+                logger.error("cancel_all: failed to cancel %s: %s", str(oid)[:14], e)
+        return n
