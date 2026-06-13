@@ -165,6 +165,7 @@ class FakeBF:
         self.killed = killed
         self.min_stake = min_stake
         self.orders = []
+        self.armed_at_place = None   # captures armed state when the hedge fires
 
     def build_order(self, market, sel, side, prob, size_gbp):
         o = {"market_id": market, "sel": sel, "side": side, "prob": prob, "size_gbp": size_gbp}
@@ -172,6 +173,7 @@ class FakeBF:
         return o
 
     async def place(self, order):
+        self.armed_at_place = self.armed
         matched = 0.0 if self.killed else order["size_gbp"]
         return {"order": order, "size_matched": matched, "order_status": "x", "rtt_ms": 5.0}
 
@@ -209,6 +211,9 @@ def test_execute_live_locked(tmp_path):
     assert not ex.armed  # one-shot auto-disarm
     # hedge sized to PM fill (5 * 0.8) and bf order was placed
     assert bf.orders and bf.orders[0]["size_gbp"] == 4.0
+    # the hedge must fire with the executor still ARMED (one-shot disarm happens
+    # only AFTER the arb completes — else the hedge would be simulated/naked)
+    assert bf.armed_at_place is True
 
 
 def test_execute_live_state_a_abort(tmp_path):

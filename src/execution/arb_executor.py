@@ -239,12 +239,14 @@ class ArbExecutor:
                     logger.info("ARB STATE A — PM killed, no fill: %s", plan.outcome_name)
                     return
 
-                # PM filled → money has moved. Consume the shot + disarm now.
+                # PM filled → money has moved. Consume the shot (this blocks new
+                # arbs via _should_fire_live immediately). Do NOT disarm the
+                # executors here — that would make THIS arb's hedge/unwind run
+                # through the dry-run path. The actual disarm happens in finally,
+                # after the arb completes.
                 self._live_count += 1
                 base["pair_status"] = "pending"
                 trade_id = self.store.save_live_trade(base)
-                if self.one_shot and self._live_count >= self.max_live_arbs:
-                    self._disarm()
 
                 hedge_stake = round(fill.size * plan.bf_price, 2)
                 # leg-risk window: PM fill confirmed -> Betfair order about to send
@@ -287,6 +289,10 @@ class ArbExecutor:
                     self.store.save_live_trade({**base, "pair_status": "error"})
             finally:
                 self._live_inflight = False
+                # One-shot disarm AFTER the arb fully completes, so the hedge and
+                # any unwind above ran with the executors still armed.
+                if self.one_shot and self._live_count >= self.max_live_arbs:
+                    self._disarm()
 
     async def _unwind_pm(self, plan: ArbPlan, fill) -> dict:
         """Immediate flatten: marketable reverse FOK sized to the PM fill. On

@@ -120,7 +120,8 @@ class BetfairExecutor:
                 market_id=order["market_id"],
                 instructions=order["instructions"],
             )
-            inst = report.instruction_reports[0] if report.instruction_reports else None
+            reports = report.place_instruction_reports
+            inst = reports[0] if reports else None
             ack = {
                 "dry_run": False,
                 "status": report.status,

@@ -45,13 +45,12 @@ signals:
                                 # than this — a wide mid is an artifact, not a price
 
 execution:
-  armed: false                  # NEVER true without explicit user sign-off; .env
-                                # EXECUTOR_ARMED overrides
+  armed: false                  # disarmed (CP2 paused: naked-leg bug)
   live_categories: [soccer, politics]   # minute-scale arb windows only, to start
   max_shares_per_leg: 5.0       # ~£2-4 exposure per leg at typical prices
   max_arbs_per_outcome: 1
-  max_daily_capital: 50.0       # shares/day kill switch across all arbs
-  one_shot: true                # fire exactly ONE real arb then auto-disarm
-  max_live_arbs: 1              # hard cap on real arbs (one_shot == 1)
+  max_daily_capital: 100.0      # CP2: deploy most of the ~$113 float (float is the hard cap)
+  one_shot: false               # CP2 soak: accumulate many arbs (not one-shot)
+  max_live_arbs: 1000           # effectively unbounded; float + daily cap throttle
   min_pm_notional: 1.0          # PM enforces $1 min order notional (confirmed live)
   min_bf_stake_gbp: 2.0         # Betfair £2 min stake
