@@ -141,9 +141,13 @@ class ArbExecutor:
         notional_ok = (pm_notional >= self.min_pm_notional
                        and bf_stake >= self.min_bf_stake_gbp)
 
+        # Only the PM-BUY leg is executable from a flat balance: selling a YES
+        # token requires already holding it (a short = buying the NO token, not
+        # yet implemented). PM-sell arbs stay shadow-only. [future: NO-token leg]
         category = self.categories.get(s.betfair_market_id, "?")
         go_live = (self.armed and category in self.live_categories
-                   and notional_ok and self._capital_ok(shares))
+                   and pm_side == "buy" and notional_ok
+                   and self._capital_ok(shares))
         h.mark("decision")
 
         for key, side, price in ((buy_key, "buy", buy_price),
@@ -273,11 +277,13 @@ class ArbExecutor:
                                          bf_rtt=ack_bf.get("rtt_ms"))
             except Exception as e:  # noqa: BLE001 — never leave silent exposure
                 logger.exception("live arb errored: %s", plan.outcome_name)
-                self.store.save_exec_event(
-                    "unwind_alert", {"outcome": plan.outcome_name, "error": str(e)})
                 if trade_id is not None:
+                    # PM had already filled -> potential naked exposure -> alert
+                    self.store.save_exec_event(
+                        "unwind_alert", {"outcome": plan.outcome_name, "error": str(e)})
                     self.store.update_live_trade(trade_id, pair_status="error")
                 else:
+                    # rejected before any fill (e.g. balance/min) -> no exposure
                     self.store.save_live_trade({**base, "pair_status": "error"})
             finally:
                 self._live_inflight = False

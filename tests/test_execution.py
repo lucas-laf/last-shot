@@ -304,6 +304,18 @@ def test_one_shot_race_single_launch(tmp_path, monkeypatch):
     assert ex._live_inflight is True
 
 
+def test_pm_sell_leg_not_fired_live(tmp_path, monkeypatch):
+    # bet_platform=BETFAIR -> the PM leg is a SELL; we can't sell tokens we don't
+    # hold, so it must stay shadow-only (no live launch).
+    ex, store = _live_executor(tmp_path, FakePM([]), FakeBF(),
+                               min_pm_notional=0.0, min_bf_stake_gbp=0.0)
+    launched = []
+    monkeypatch.setattr(ex, "_launch", lambda coro: (launched.append(coro), coro.close()))
+    ex.on_signal(make_signal(buy_platform=Platform.BETFAIR))
+    assert launched == []
+    assert store._conn.execute("select count(*) from shadow_orders").fetchone()[0] == 2
+
+
 def test_min_notional_skips_live_keeps_shadow(tmp_path, monkeypatch):
     # huge min notional -> live gated off, shadows still recorded
     ex, store = _live_executor(tmp_path, FakePM([]), FakeBF(), min_pm_notional=1000.0)
