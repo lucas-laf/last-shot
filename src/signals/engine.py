@@ -27,8 +27,9 @@ class PairState:
     betfair_market_id: str
     betfair_selection_id: str
     polymarket_market_id: str
-    polymarket_token_id: str
+    polymarket_token_id: str           # YES token
     outcome_name: str
+    polymarket_no_token_id: str = ""   # NO token, for shorting via a NO-buy
     pm_taker_rate: float = 0.0
     bf_liquidity: float = 0.0
     pm_liquidity: float = 0.0

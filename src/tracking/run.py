@@ -39,12 +39,15 @@ def build_states(store: Store) -> list[PairState]:
         pm = pm_markets.get(p.polymarket_market_id)
         if not bf or not pm or not bf.active or not pm.active:
             continue
+        no_token = next((o.no_token_id for o in pm.outcomes
+                         if o.outcome_id == link.polymarket_token_id), None)
         states.append(PairState(
             betfair_market_id=p.betfair_market_id,
             betfair_selection_id=link.betfair_selection_id,
             polymarket_market_id=p.polymarket_market_id,
             polymarket_token_id=link.polymarket_token_id,
             outcome_name=link.name,
+            polymarket_no_token_id=no_token or "",
             pm_taker_rate=pm.taker_fee,
             bf_liquidity=bf.liquidity,
             pm_liquidity=pm.liquidity,

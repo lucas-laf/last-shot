@@ -53,10 +53,11 @@ class PendingShadow:
 class ArbPlan:
     """Immutable snapshot of one arb to execute. Never hold a live PairState —
     it mutates on every tick between scheduling and execution."""
-    pm_token_id: str
+    pm_token_id: str           # token we actually trade (YES, or NO when shorting)
     pm_market_id: str
-    pm_side: str               # buy | sell on the PM YES token
-    pm_price: float            # raw book price we'd cross
+    pm_side: str               # always "buy" (buy YES, or buy NO to short)
+    pm_price: float            # raw book price we'd cross on pm_token_id
+    pm_is_short: bool          # True when the logical YES-sell is done as a NO-buy
     bf_market_id: str
     bf_selection_id: str
     bf_side: str               # buy (BACK) | sell (LAY)
@@ -133,21 +134,31 @@ class ArbExecutor:
             return
         self._arbs_by_outcome[outcome] = self._arbs_by_outcome.get(outcome, 0) + 1
 
-        # Min-notional: skip the *live* path (still record shadows) if either
-        # leg can't meet its venue minimum — build_order's max(size,min) clamp
-        # would otherwise silently over-spend.
-        pm_notional = shares * pm_price
+        # PM execution leg. Both directions are executable from a USDC balance:
+        #  - Case 1 (pm_side buy):  buy the YES token at its ask.
+        #  - Case 2 (pm_side sell): SHORT by buying the NO token at (1 - YES_bid)
+        #    — economically identical to selling YES @ YES_bid, but needs only
+        #    USDC (selling YES would require holding it). Needs the NO token id.
+        pm_is_short = (pm_side == "sell")
+        if pm_is_short:
+            pm_exec_token = s.polymarket_no_token_id
+            pm_exec_price = round(1.0 - pm_price, 4)   # NO ask mirrors YES bid
+            can_execute = bool(pm_exec_token)
+        else:
+            pm_exec_token, pm_exec_price = s.polymarket_token_id, pm_price
+            can_execute = True
+
+        # Min-notional: skip the *live* path (still record shadows) if either leg
+        # can't meet its venue minimum — build_order's max(size,min) clamp would
+        # otherwise silently over-spend. Use the actual USDC outlay (exec price).
+        pm_notional = shares * pm_exec_price
         bf_stake = shares * bf_price
         notional_ok = (pm_notional >= self.min_pm_notional
                        and bf_stake >= self.min_bf_stake_gbp)
 
-        # Only the PM-BUY leg is executable from a flat balance: selling a YES
-        # token requires already holding it (a short = buying the NO token, not
-        # yet implemented). PM-sell arbs stay shadow-only. [future: NO-token leg]
         category = self.categories.get(s.betfair_market_id, "?")
         go_live = (self.armed and category in self.live_categories
-                   and pm_side == "buy" and notional_ok
-                   and self._capital_ok(shares))
+                   and can_execute and notional_ok and self._capital_ok(shares))
         h.mark("decision")
 
         for key, side, price in ((buy_key, "buy", buy_price),
@@ -162,19 +173,19 @@ class ArbExecutor:
         if go_live and self._should_fire_live():
             self._live_inflight = True
             plan = ArbPlan(
-                pm_token_id=s.polymarket_token_id, pm_market_id=s.polymarket_market_id,
-                pm_side=pm_side, pm_price=pm_price,
+                pm_token_id=pm_exec_token, pm_market_id=s.polymarket_market_id,
+                pm_side="buy", pm_price=pm_exec_price, pm_is_short=pm_is_short,
                 bf_market_id=s.betfair_market_id, bf_selection_id=s.betfair_selection_id,
                 bf_side=bf_side, bf_price=bf_price, shares=shares, category=category,
                 outcome_name=s.outcome_name, edge=sig.edge_after_fees,
                 decide_us=h.us("decision"),
                 decision_ts=datetime.now(timezone.utc).isoformat(),
             )
-            self._launch(self._execute_live(plan))
+            self._fire_live(plan)
 
         self.store.save_exec_event("arb_decision", {
             "outcome": s.outcome_name, "category": category, "shares": shares,
-            "edge": sig.edge_after_fees, "armed": go_live,
+            "edge": sig.edge_after_fees, "armed": go_live, "pm_short": pm_is_short,
             "min_notional_ok": notional_ok, "hops_us": h.as_dict(),
         })
 
@@ -183,6 +194,10 @@ class ArbExecutor:
     def _should_fire_live(self) -> bool:
         return (self.armed and not self._live_inflight
                 and self._live_count < self.max_live_arbs)
+
+    def _fire_live(self, plan: "ArbPlan") -> None:
+        """Schedule the async arb. Seam for tests to capture the plan."""
+        self._launch(self._execute_live(plan))
 
     def _launch(self, coro) -> None:
         """Schedule the async arb on the running loop. on_signal runs on the

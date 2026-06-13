@@ -61,10 +61,12 @@ def make_executor(tmp_path, **kw):
         categories={"1.1": "tennis"}, **kw), store
 
 
-def make_signal(buy_platform=Platform.POLYMARKET, ask_size=20.0, bid_size=8.0):
+def make_signal(buy_platform=Platform.POLYMARKET, ask_size=20.0, bid_size=8.0,
+                no_token=""):
     s = PairState(
         betfair_market_id="1.1", betfair_selection_id="42",
         polymarket_market_id="0xabc", polymarket_token_id="tok1",
+        polymarket_no_token_id=no_token,
         outcome_name="Test Player",
         bf=Quote(bid=0.50, ask=0.52, bid_size=bid_size, ask_size=30.0),
         pm=Quote(bid=0.55, ask=0.49, bid_size=12.0, ask_size=ask_size),
@@ -181,9 +183,10 @@ class FakeBF:
         return BfFill(matched_stake=ack["size_matched"], avg_odds=2.0, status="x")
 
 
-def _plan(shares=5.0, bf_price=0.8, pm_side="buy"):
+def _plan(shares=5.0, bf_price=0.8, pm_side="buy", pm_is_short=False):
     return ArbPlan(
         pm_token_id="tok1", pm_market_id="0xabc", pm_side=pm_side, pm_price=0.5,
+        pm_is_short=pm_is_short,
         bf_market_id="1.1", bf_selection_id="42", bf_side="sell", bf_price=bf_price,
         shares=shares, category="soccer", outcome_name="Test", edge=0.02,
         decide_us=120.0, decision_ts="2026-06-13T00:00:00Z")
@@ -309,16 +312,31 @@ def test_one_shot_race_single_launch(tmp_path, monkeypatch):
     assert ex._live_inflight is True
 
 
-def test_pm_sell_leg_not_fired_live(tmp_path, monkeypatch):
-    # bet_platform=BETFAIR -> the PM leg is a SELL; we can't sell tokens we don't
-    # hold, so it must stay shadow-only (no live launch).
+def test_pm_short_skipped_without_no_token(tmp_path, monkeypatch):
+    # PM-sell leg (bet_platform=BETFAIR) with NO no_token id -> can't short, so
+    # it stays shadow-only (no live launch).
     ex, store = _live_executor(tmp_path, FakePM([]), FakeBF(),
                                min_pm_notional=0.0, min_bf_stake_gbp=0.0)
-    launched = []
-    monkeypatch.setattr(ex, "_launch", lambda coro: (launched.append(coro), coro.close()))
-    ex.on_signal(make_signal(buy_platform=Platform.BETFAIR))
-    assert launched == []
+    fired = []
+    monkeypatch.setattr(ex, "_fire_live", lambda plan: fired.append(plan))
+    ex.on_signal(make_signal(buy_platform=Platform.BETFAIR))   # no no_token
+    assert fired == []
     assert store._conn.execute("select count(*) from shadow_orders").fetchone()[0] == 2
+
+
+def test_pm_short_via_no_token_fires(tmp_path, monkeypatch):
+    # PM-sell leg WITH a NO token -> short by BUYING the NO token at (1-YES_bid).
+    ex, store = _live_executor(tmp_path, FakePM([]), FakeBF(),
+                               min_pm_notional=0.0, min_bf_stake_gbp=0.0)
+    fired = []
+    monkeypatch.setattr(ex, "_fire_live", lambda plan: fired.append(plan))
+    ex.on_signal(make_signal(buy_platform=Platform.BETFAIR, no_token="notok"))
+    assert len(fired) == 1
+    plan = fired[0]
+    assert plan.pm_token_id == "notok"      # trades the NO token
+    assert plan.pm_side == "buy"            # short = buy NO
+    assert plan.pm_is_short is True
+    assert plan.pm_price == round(1.0 - 0.55, 4)   # NO ask = 1 - YES bid (0.55)
 
 
 def test_min_notional_skips_live_keeps_shadow(tmp_path, monkeypatch):
