@@ -53,5 +53,5 @@ execution:
   max_daily_capital: 50.0       # shares/day kill switch across all arbs
   one_shot: true                # fire exactly ONE real arb then auto-disarm
   max_live_arbs: 1              # hard cap on real arbs (one_shot == 1)
-  min_pm_notional: 3.0          # skip live arbs below PM ~$3 / Betfair £2 minimums
-  min_bf_stake_gbp: 2.0
+  min_pm_notional: 1.0          # PM enforces $1 min order notional (confirmed live)
+  min_bf_stake_gbp: 2.0         # Betfair £2 min stake

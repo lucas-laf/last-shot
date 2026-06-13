@@ -83,7 +83,7 @@ class ArbExecutor:
     max_daily_capital: float = 50.0
     one_shot: bool = True                  # fire one real arb then auto-disarm
     max_live_arbs: int = 1                  # hard cap on real arbs
-    min_pm_notional: float = 3.0            # skip live arbs the float can't cover
+    min_pm_notional: float = 1.0            # PM enforces a $1 min order notional
     min_bf_stake_gbp: float = 2.0
     _pending: dict[tuple, list] = field(default_factory=dict)
     _arbs_by_outcome: dict[tuple, int] = field(default_factory=dict)

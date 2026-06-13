@@ -127,6 +127,7 @@ class PolymarketExecutor:
         from py_clob_client_v2 import Side
         from py_clob_client_v2.clob_types import (OrderArgs, OrderType,
                                                   PartialCreateOrderOptions)
+        from py_clob_client_v2.exceptions import PolyApiException
 
         # Resolve market params (cached per token after the first lookup).
         tick = order.get("tick_size") or await asyncio.to_thread(
@@ -153,7 +154,22 @@ class PolymarketExecutor:
             ack |= {"dry_run": True, "sent": False, "status": "BUILT_NOT_SENT"}
         else:
             ot = OrderType.GTC if order_type == "GTC" else OrderType.FOK
-            resp = await asyncio.to_thread(self._client.post_order, signed, ot)
+            try:
+                resp = await asyncio.to_thread(self._client.post_order, signed, ot)
+            except PolyApiException as e:
+                msg = e.error_msg if isinstance(e.error_msg, dict) else {"error": str(e.error_msg)}
+                err = str(msg.get("error", "")).lower()
+                # A killed FOK (no full fill) is reported as a 400, not a normal
+                # response. It means ZERO fill / no exposure — a clean STATE A
+                # abort, not an error. Anything else is a real failure -> re-raise.
+                if "killed" in err or "couldn't be fully filled" in err:
+                    ack |= {"dry_run": False, "sent": True, "status": "killed",
+                            "order_id": msg.get("orderID"), "error": "FOK_KILLED",
+                            "resp": msg}
+                    ack["rtt_ms"] = (time.perf_counter_ns() - t0) / 1e6
+                    self.store.save_exec_event("polymarket_order", ack)
+                    return ack
+                raise
             ack |= {"dry_run": False, "sent": True, "status": resp.get("status"),
                     "order_id": resp.get("orderID"), "error": resp.get("errorMsg"),
                     "resp": resp}
@@ -185,6 +201,11 @@ class PolymarketExecutor:
             frac = 1.0 if self._sim_fill_fraction is None else self._sim_fill_fraction
             return FillResult(size=round(intended_size * frac, 2), avg_price=px,
                               source="shadow", raw=place_ack)
+
+        # Killed FOK: place() already classified it as a clean no-fill.
+        if status == "killed" or place_ack.get("error") == "FOK_KILLED":
+            return FillResult(size=0.0, avg_price=px, source="killed",
+                              raw=place_ack.get("resp", {}))
 
         import asyncio
 
