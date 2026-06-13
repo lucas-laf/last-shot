@@ -127,9 +127,28 @@ CREATE TABLE IF NOT EXISTS live_trades (
     bf_rtt_ms REAL,
     pm_to_bf_gap_ms REAL,             -- PM fill -> Betfair order sent (the leg-risk window)
     total_ms REAL,
-    resolved_ts TEXT
+    resolved_ts TEXT,
+    -- which PM token we hold (for settlement) and whether it was a NO-short
+    pm_token_id TEXT,
+    pm_is_short INTEGER,
+    bf_selection_id TEXT,             -- the Betfair runner, for settlement/void check
+    -- settlement (settle_live): result per leg = won|lost|void|pending
+    settled INTEGER DEFAULT 0,
+    pm_result TEXT,
+    bf_result TEXT,
+    realized_pnl REAL,
+    divergence INTEGER,               -- 1 if legs settled inconsistently (e.g. one void, one paid)
+    settled_ts TEXT
 );
 """
+
+# Columns added to live_trades after its first release; ALTER-migrated on open
+# for DBs created before they existed.
+_LIVE_TRADE_MIGRATIONS = [
+    ("pm_token_id", "TEXT"), ("pm_is_short", "INTEGER"), ("bf_selection_id", "TEXT"),
+    ("settled", "INTEGER DEFAULT 0"), ("pm_result", "TEXT"), ("bf_result", "TEXT"),
+    ("realized_pnl", "REAL"), ("divergence", "INTEGER"), ("settled_ts", "TEXT"),
+]
 
 
 class Store:
@@ -145,7 +164,15 @@ class Store:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA busy_timeout=10000")
         self._conn.executescript(SCHEMA)
+        self._migrate_live_trades()
         self._lock = threading.Lock()
+
+    def _migrate_live_trades(self) -> None:
+        existing = {r[1] for r in self._conn.execute("PRAGMA table_info(live_trades)")}
+        for col, decl in _LIVE_TRADE_MIGRATIONS:
+            if col not in existing:
+                self._conn.execute(f"ALTER TABLE live_trades ADD COLUMN {col} {decl}")
+        self._conn.commit()
 
     # ---------- markets ----------
 
@@ -322,6 +349,8 @@ class Store:
         "bf_intended_price", "bf_intended_stake", "bf_filled_price", "bf_filled_stake",
         "pair_status", "unwind_cost", "edge_intended", "edge_realized", "decide_us",
         "pm_rtt_ms", "bf_rtt_ms", "pm_to_bf_gap_ms", "total_ms", "resolved_ts",
+        "pm_token_id", "pm_is_short", "bf_selection_id", "settled", "pm_result",
+        "bf_result", "realized_pnl", "divergence", "settled_ts",
     )
 
     def save_live_trade(self, row: dict) -> int:

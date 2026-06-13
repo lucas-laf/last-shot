@@ -237,6 +237,8 @@ class ArbExecutor:
                 "bf_intended_price": plan.bf_price,
                 "bf_intended_stake": round(plan.shares * plan.bf_price, 2),
                 "edge_intended": plan.edge, "decide_us": plan.decide_us,
+                "pm_token_id": plan.pm_token_id, "pm_is_short": int(plan.pm_is_short),
+                "bf_selection_id": plan.bf_selection_id,
             }
             try:
                 pm_order = self.pm_exec.build_order(
