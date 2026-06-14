@@ -359,9 +359,11 @@ class MakerExecutor:
             await self._cancel_quote(key, reason="cancel_all")
 
     def _disarm(self) -> None:
+        # Only disarm the maker — the bf/pm executors are SHARED with the taker
+        # soak; disarming them would silently kill the taker. self.armed=False
+        # stops the quoting loop, and cancel_all() (called before this) clears
+        # any resting orders.
         self.armed = False
-        self.bf_exec.armed = False
-        self.pm_exec.armed = False
         logger.warning("MAKER ONE-SHOT COMPLETE — auto-disarmed after %d arb(s)",
                        self._live_count)
         self.store.save_exec_event("maker_auto_disarm", {"live_count": self._live_count})
