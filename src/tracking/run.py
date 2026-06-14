@@ -149,7 +149,7 @@ async def main() -> None:
             armed=ex.get("armed", False),
             commission=cfg["signals"]["betfair_commission"],
             margin=mk.get("margin", 0.01), refresh_s=mk.get("refresh_s", 0.5),
-            poll_s=mk.get("poll_s", 0.5), cancel_stale_s=mk.get("cancel_stale_s", 3.0),
+            poll_s=mk.get("poll_s", 0.5), cancel_stale_s=mk.get("cancel_stale_s", 30.0),
             reprice_eps=mk.get("reprice_eps", 0.01),
             max_open_quotes=mk.get("max_open_quotes", 8),
             quote_shares=mk.get("quote_shares", 5.0),

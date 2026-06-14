@@ -83,7 +83,7 @@ class MakerExecutor:
                  categories: dict[str, str], armed: bool = False,
                  commission: float = 0.05, margin: float = 0.01,
                  refresh_s: float = 0.5, poll_s: float = 0.5,
-                 cancel_stale_s: float = 3.0, reprice_eps: float = 0.01,
+                 cancel_stale_s: float = 30.0, reprice_eps: float = 0.01,
                  max_open_quotes: int = 8, quote_shares: float = 5.0,
                  min_quote_shares: float = 2.0, one_shot: bool = True,
                  max_live_arbs: int = 1, live_categories: tuple = ("tennis",),
@@ -174,6 +174,14 @@ class MakerExecutor:
                 for s in self.states:
                     for side in ("bid", "ask"):
                         await self._reconcile(s, side)
+            self._pass = getattr(self, "_pass", 0) + 1
+            if self._pass % 20 == 0:    # ~every 10s: prove the loop is evaluating
+                elig = sum(1 for s in self.states if self._eligible(s))
+                quotable = sum(1 for s in self.states if self._eligible(s)
+                               for side in ("bid", "ask") if self._compute_target(s, side))
+                logger.info("maker: %d eligible %s pairs, %d quotable sides, "
+                            "%d resting, $%.1f reserved", elig, ",".join(self.live_categories),
+                            quotable, len(self._quotes), self._reserved_usd)
 
     async def _reconcile(self, s: PairState, side: str) -> None:
         """Place / cancel / replace one resting quote. Lock held by caller."""
