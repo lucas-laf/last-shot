@@ -79,6 +79,7 @@ class ArbExecutor:
     categories: dict[str, str]            # betfair_market_id -> category
     armed: bool = False
     live_categories: tuple = ("soccer", "politics")
+    start_times: dict = field(default_factory=dict)  # bf_market_id -> start datetime
     max_shares_per_leg: float = 5.0
     max_arbs_per_outcome: int = 1
     max_daily_capital: float = 50.0
@@ -96,6 +97,14 @@ class ArbExecutor:
 
     def __post_init__(self) -> None:
         self._live_lock = asyncio.Lock()
+
+    def _pre_match(self, market_id: str) -> bool:
+        """True if the Betfair market has NOT started yet. In-play markets carry a
+        1-5s `bet_delay` that holds (and expires) our FOK hedge; pre-match
+        bet_delay is 0, so we only fire pre-match. Null start_time (e.g. politics
+        elections, far-future) is treated as pre-match."""
+        st = self.start_times.get(market_id)
+        return st is None or datetime.now(timezone.utc) < st
 
     # ---------- signal entry ----------
 
@@ -158,7 +167,8 @@ class ArbExecutor:
 
         category = self.categories.get(s.betfair_market_id, "?")
         go_live = (self.armed and category in self.live_categories
-                   and can_execute and notional_ok and self._capital_ok(shares))
+                   and can_execute and notional_ok and self._capital_ok(shares)
+                   and self._pre_match(s.betfair_market_id))
         h.mark("decision")
 
         for key, side, price in ((buy_key, "buy", buy_price),
@@ -227,6 +237,7 @@ class ArbExecutor:
         async with self._live_lock:
             t0 = time.perf_counter()
             trade_id = None
+            fill = None              # set once the PM leg fills; used by error-path unwind
             base = {
                 "decision_ts": plan.decision_ts,
                 "betfair_market_id": plan.bf_market_id,
@@ -296,10 +307,21 @@ class ArbExecutor:
                                          bf_rtt=ack_bf.get("rtt_ms"))
             except Exception as e:  # noqa: BLE001 — never leave silent exposure
                 logger.exception("live arb errored: %s", plan.outcome_name)
-                if trade_id is not None:
-                    # PM had already filled -> potential naked exposure -> alert
-                    self.store.save_exec_event(
-                        "unwind_alert", {"outcome": plan.outcome_name, "error": str(e)})
+                if trade_id is not None and fill is not None and fill.size > 0:
+                    # PM already filled -> NAKED exposure. Unwind it; do NOT just
+                    # flag 'error' and walk away (that left the #53 Scotland naked
+                    # leg). Only fall back to 'error' if the unwind itself throws.
+                    try:
+                        uw = await self._unwind_pm(plan, fill)
+                        self._record_unwound(trade_id, (time.perf_counter() - t0) * 1e3,
+                                             t0, uw, bf=None, bf_rtt=None)
+                    except Exception:  # noqa: BLE001
+                        logger.exception("error-path unwind ALSO failed: %s", plan.outcome_name)
+                        self.store.save_exec_event(
+                            "unwind_alert", {"outcome": plan.outcome_name,
+                                             "error": str(e), "naked_size": fill.size})
+                        self.store.update_live_trade(trade_id, pair_status="error")
+                elif trade_id is not None:
                     self.store.update_live_trade(trade_id, pair_status="error")
                 else:
                     # rejected before any fill (e.g. balance/min) -> no exposure

@@ -126,6 +126,23 @@ def test_compute_target_ask_skipped_without_no_token(tmp_path):
     assert ex._compute_target(make_state(no_token=""), "ask") is None
 
 
+def test_eligible_blocks_inplay_market(tmp_path):
+    # Pre-match gate: a Betfair market whose start_time has passed is in-play
+    # (1-5s bet_delay expires the hedge) -> not eligible. Null/future -> eligible.
+    from datetime import datetime, timedelta, timezone
+    pm, bf = FakePM(), FakeBF()
+    s = make_state()
+    past = datetime.now(timezone.utc) - timedelta(minutes=5)
+    future = datetime.now(timezone.utc) + timedelta(hours=1)
+    ex, _ = make_maker(tmp_path, pm, bf, states=[s], live_categories=("tennis",))
+    ex.start_times = {"1.1": past}
+    assert ex._eligible(s) is False               # in-play -> blocked
+    ex.start_times = {"1.1": future}
+    assert ex._eligible(s) is True                # pre-match -> allowed
+    ex.start_times = {}                            # unknown start -> treated pre-match
+    assert ex._eligible(s) is True
+
+
 def test_compute_target_gate_outside_spread(tmp_path):
     ex, _ = make_maker(tmp_path, FakePM(), FakeBF())
     # pm bid 0.50 > q_buy 0.46 -> not inside spread -> None
@@ -181,6 +198,21 @@ def test_fill_hedge_locks(tmp_path):
     assert row[0] == "locked" and row[1] == 1
     assert bf.orders and bf.orders[0]["size_gbp"] == round(5.0 * 0.50, 2)  # hedge sized to fill @ bf.bid
     assert ex._quotes == {} and abs(ex._reserved_usd) < 1e-9
+
+
+def test_hedge_crosses_book_within_margin(tmp_path):
+    # The hedge must be priced DEEPER than the Betfair touch (by up to the locked
+    # margin) so a FOK still fills if the price drifted during the fill->hedge gap.
+    pm, bf = FakePM(), FakeBF(killed=False)
+    s = make_state()
+    ex, _ = make_maker(tmp_path, pm, bf, states=[s], one_shot=False)
+    q = _quote(s, ex, "bid")             # bid -> LAY hedge
+    ex._quotes["bid:1.1:42"] = q
+    ex._reserved_usd = q.reserved_usd
+    asyncio.run(ex._handle_fill("bid:1.1:42", q, matched=5.0, info={}))
+    assert bf.orders
+    assert bf.orders[0]["prob"] < s.bf.bid          # crosses below the touch
+    assert abs(bf.orders[0]["prob"] - (s.bf.bid - q.locked)) < 1e-9
 
 
 def test_fill_hedge_unwind_on_bf_kill(tmp_path):

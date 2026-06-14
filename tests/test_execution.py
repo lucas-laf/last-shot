@@ -77,6 +77,19 @@ def make_signal(buy_platform=Platform.POLYMARKET, ask_size=20.0, bid_size=8.0,
                   entry_prob=0.49, reference_prob=0.50, edge_after_fees=0.01)
 
 
+def test_pre_match_gate(tmp_path):
+    # Only fire pre-match: in-play Betfair markets carry a bet_delay that expires
+    # the FOK hedge. start_time in the past -> in-play -> blocked.
+    from datetime import timedelta
+    ex, _ = make_executor(tmp_path)
+    now = datetime.now(timezone.utc)
+    ex.start_times = {"1.1": now - timedelta(minutes=5)}
+    assert ex._pre_match("1.1") is False          # started -> in-play -> blocked
+    ex.start_times = {"1.1": now + timedelta(hours=1)}
+    assert ex._pre_match("1.1") is True           # pre-match -> allowed
+    assert ex._pre_match("unknown") is True        # null start -> pre-match
+
+
 def test_arb_records_both_legs_min_sized(tmp_path):
     ex, store = make_executor(tmp_path)
     ex.on_signal(make_signal())
@@ -238,6 +251,22 @@ def test_hedge_sized_to_pm_fill_not_plan(tmp_path):
     asyncio.run(ex._execute_live(_plan(shares=5.0, bf_price=0.8)))
     assert bf.orders[0]["size_gbp"] == round(3.0 * 0.8, 2)   # not 5*0.8
     assert _status(store) == "locked"
+
+
+def test_execute_live_unwinds_naked_leg_on_hedge_error(tmp_path):
+    # Betfair hedge RAISES (not just kills) after the PM leg filled -> the error
+    # path must UNWIND the naked PM leg, not leave it 'error' (#53 Scotland bug).
+    class RaisingBF(FakeBF):
+        async def place(self, order):
+            raise RuntimeError("place_instruction_reports boom")
+    pm = FakePM([
+        FillResult(size=5.0, avg_price=0.5, source="post_response", raw={}),   # open
+        FillResult(size=5.0, avg_price=0.47, source="post_response", raw={}),  # flatten
+    ])
+    ex, store = _live_executor(tmp_path, pm, RaisingBF())
+    asyncio.run(ex._execute_live(_plan()))
+    assert _status(store) == "unwound"          # NOT 'error'
+    assert any(o["side"] == "sell" and ot == "FOK" for o, ot in pm.placed)
 
 
 def test_execute_live_unwind_on_bf_kill(tmp_path):

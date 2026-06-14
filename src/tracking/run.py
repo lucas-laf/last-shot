@@ -70,6 +70,10 @@ async def main() -> None:
         return
     logger.info("Tracking %d matched outcomes", len(states))
 
+    # Betfair market metadata (category + start_time) for the executor gates.
+    bf_markets = {m.market_id: m
+                  for m in store.get_markets(Platform.BETFAIR, active_only=False)}
+
     by_bf = {(s.betfair_market_id, s.betfair_selection_id): s for s in states}
     by_pm_token = {s.polymarket_token_id: s for s in states}
 
@@ -120,8 +124,8 @@ async def main() -> None:
                                    armed=ex.get("armed", False),
                                    signature_type=cfg.get("poly_signature_type", 2)),
         rtt=rtt,
-        categories={m.market_id: m.category
-                    for m in store.get_markets(Platform.BETFAIR, active_only=False)},
+        categories={mid: m.category for mid, m in bf_markets.items()},
+        start_times={mid: m.start_time for mid, m in bf_markets.items()},
         armed=ex.get("armed", False),
         live_categories=tuple(ex.get("live_categories", ["soccer", "politics"])),
         max_shares_per_leg=ex.get("max_shares_per_leg", 5.0),
@@ -146,6 +150,7 @@ async def main() -> None:
         maker = MakerExecutor(
             states=states, bf_exec=arb_exec.bf_exec, pm_exec=arb_exec.pm_exec,
             store=store, rtt=rtt, categories=arb_exec.categories,
+            start_times=arb_exec.start_times,
             armed=ex.get("armed", False),
             commission=cfg["signals"]["betfair_commission"],
             margin=mk.get("margin", 0.01), refresh_s=mk.get("refresh_s", 0.5),

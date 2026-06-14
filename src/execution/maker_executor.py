@@ -88,7 +88,7 @@ class MakerExecutor:
                  min_quote_shares: float = 2.0, one_shot: bool = True,
                  max_live_arbs: int = 1, live_categories: tuple = ("tennis",),
                  float_usd: float = 80.0, min_pm_notional: float = 1.0,
-                 min_bf_stake_gbp: float = 2.0):
+                 min_bf_stake_gbp: float = 2.0, start_times: dict | None = None):
         self.states = states
         self.bf_exec = bf_exec
         self.pm_exec = pm_exec
@@ -111,6 +111,7 @@ class MakerExecutor:
         self.float_usd = float_usd
         self.min_pm_notional = min_pm_notional
         self.min_bf_stake_gbp = min_bf_stake_gbp
+        self.start_times = start_times or {}
 
         self._quotes: dict[str, MakerQuote] = {}
         self._reserved_usd = 0.0
@@ -153,10 +154,17 @@ class MakerExecutor:
     def _fresh(self, ts) -> bool:
         return bool(ts) and (datetime.now(timezone.utc) - ts).total_seconds() <= self.cancel_stale_s
 
+    def _pre_match(self, market_id: str) -> bool:
+        """Only quote pre-match: in-play Betfair markets carry a 1-5s bet_delay
+        that holds and expires our FOK hedge. Null start_time -> pre-match."""
+        st = self.start_times.get(market_id)
+        return st is None or datetime.now(timezone.utc) < st
+
     def _eligible(self, s: PairState) -> bool:
         return (self.categories.get(s.betfair_market_id) in self.live_categories
                 and s.bf is not None and s.pm is not None
-                and self._fresh(s.bf_ts) and self._fresh(s.pm_ts))
+                and self._fresh(s.bf_ts) and self._fresh(s.pm_ts)
+                and self._pre_match(s.betfair_market_id))
 
     def _should_quote(self) -> bool:
         return self.armed and not self._shutdown and self._live_count < self.max_live_arbs
@@ -307,20 +315,36 @@ class MakerExecutor:
                 uw = await self._unwind(q, fill_size)
                 self._finalize_unwind(trade_id, fill_detected, uw, bf=None)
             else:
+                # Cross DEEPER into the Betfair book by up to the locked margin so
+                # the hedge still fills if the price drifted during the fill->hedge
+                # gap (poll + RTT). A touch-priced FOK expired the instant the market
+                # moved (see the Blinkova test). A move beyond `locked` would erase
+                # the lock anyway -> let the FOK kill and unwind.
+                hedge_prob = (bf_price - q.locked if q.bf_hedge_side == "sell"
+                              else bf_price + q.locked)
+                hedge_prob = min(max(hedge_prob, 0.01), 0.99)
                 bf_order = self.bf_exec.build_order(
                     s.betfair_market_id, s.betfair_selection_id, q.bf_hedge_side,
-                    bf_price, hedge_stake)
+                    hedge_prob, hedge_stake)
                 ack_bf = await self.bf_exec.place(bf_order)
                 bf = self.bf_exec.parse_fill(ack_bf)
                 gap_ms = (time.perf_counter() - fill_detected) * 1e3
                 if bf.matched_enough(hedge_stake):
+                    # Realized lock from the ACTUAL fill price (we may have spent
+                    # part of `locked` on slippage to land the hedge).
+                    fill_prob = (1.0 / bf.avg_odds) if bf.avg_odds else hedge_prob
+                    yes_price = (q.exec_price if q.bf_hedge_side == "sell"
+                                 else 1.0 - q.exec_price)
+                    realized = (fees.betfair_sell(fill_prob, self.commission) - yes_price
+                                if q.bf_hedge_side == "sell"
+                                else yes_price - fees.betfair_buy(fill_prob, self.commission))
                     self.store.update_live_trade(
                         trade_id, pair_status="locked", bf_filled_stake=bf.matched_stake,
-                        bf_filled_price=(1.0 / bf.avg_odds) if bf.avg_odds else bf_price,
+                        bf_filled_price=fill_prob,
                         pm_to_bf_gap_ms=gap_ms, bf_rtt_ms=ack_bf.get("rtt_ms"),
-                        edge_realized=q.locked)
-                    logger.info("MAKER LOCKED %s shares=%.2f locked=%.4f gap=%.0fms",
-                                s.outcome_name, fill_size, q.locked, gap_ms)
+                        edge_realized=round(realized, 4))
+                    logger.info("MAKER LOCKED %s shares=%.2f locked=%.4f real=%.4f gap=%.0fms",
+                                s.outcome_name, fill_size, q.locked, realized, gap_ms)
                 else:
                     uw = await self._unwind(q, fill_size)
                     self._finalize_unwind(trade_id, fill_detected, uw, bf=bf,

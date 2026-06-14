@@ -107,17 +107,25 @@ def main() -> None:
     store._conn.row_factory = __import__("sqlite3").Row
     rows = store._conn.execute(
         """SELECT * FROM live_trades
-           WHERE settled IS NOT 1 AND pair_status IN ('locked','unwound')"""
+           WHERE settled IS NOT 1 AND pair_status IN ('locked','unwound','error')"""
     ).fetchall()
     if not rows:
         logger.info("no unsettled live arbs")
         return
 
-    # unwound arbs are already closed at flatten time
+    # unwound arbs are already closed at flatten time. locked + error rows with a
+    # real one-sided fill need their filled leg(s) resolved against venue results.
+    def _pm_filled(r): return (r["pm_filled_size"] or 0) > 0
+    def _bf_filled(r): return (r["bf_filled_stake"] or 0) > 0
     locked = [r for r in rows if r["pair_status"] == "locked"]
-    pm_res = fetch_pm_results(sorted({r["polymarket_market_id"] for r in locked})) if locked else {}
-    bf_st = fetch_bf_status(make_client(cfg),
-                            sorted({r["betfair_market_id"] for r in locked})) if locked else {}
+    errs = [r for r in rows if r["pair_status"] == "error"]
+    pm_markets = {r["polymarket_market_id"] for r in locked}
+    bf_markets = {r["betfair_market_id"] for r in locked}
+    for r in errs:                       # only fetch markets we actually need
+        if _pm_filled(r): pm_markets.add(r["polymarket_market_id"])
+        if _bf_filled(r): bf_markets.add(r["betfair_market_id"])
+    pm_res = fetch_pm_results(sorted(pm_markets)) if pm_markets else {}
+    bf_st = fetch_bf_status(make_client(cfg), sorted(bf_markets)) if bf_markets else {}
 
     n_settled = n_div = 0
     for r in rows:
@@ -128,6 +136,42 @@ def main() -> None:
                                     divergence=0, settled_ts=datetime.now(timezone.utc).isoformat())
             n_settled += 1
             continue
+
+        if r["pair_status"] == "error":
+            # No silent blind spot: settle the leg(s) that actually filled. A naked
+            # leg has no hedge, so divergence is N/A (0).
+            pm_f, bf_f = _pm_filled(r), _bf_filled(r)
+            if not pm_f and not bf_f:                          # no exposure -> close
+                store.update_live_trade(r["id"], settled=1, pm_result="none",
+                    bf_result="none", realized_pnl=0.0, divergence=0,
+                    settled_ts=datetime.now(timezone.utc).isoformat())
+                n_settled += 1
+                continue
+            if pm_f and not bf_f:                              # naked PM leg
+                pm_result, pm_pnl, _ = _pm_leg(r, pm_res.get(r["polymarket_market_id"]))
+                if pm_result == "pending":
+                    continue
+                store.update_live_trade(r["id"], settled=1, pm_result=pm_result,
+                    bf_result="no_fill", realized_pnl=round(pm_pnl or 0.0, 4),
+                    divergence=0, settled_ts=datetime.now(timezone.utc).isoformat())
+                n_settled += 1
+                continue
+            if bf_f and not pm_f:                              # naked BF leg
+                bf_result, x_won = _bf_leg(r, bf_st.get(r["betfair_market_id"]))
+                if bf_result == "pending":
+                    continue
+                stake, p = r["bf_filled_stake"] or 0.0, r["bf_filled_price"] or 0.0
+                odds = 1.0 / p if p > 0 else 0.0
+                bf_pnl = 0.0
+                if bf_result != "void" and x_won is not None and odds > 0:
+                    bf_pnl = (stake * (odds - 1) if x_won else -stake) if r["bf_side"] == "buy" \
+                        else (stake if not x_won else -stake * (odds - 1))
+                store.update_live_trade(r["id"], settled=1, pm_result="no_fill",
+                    bf_result=bf_result, realized_pnl=round(bf_pnl, 4), divergence=0,
+                    settled_ts=datetime.now(timezone.utc).isoformat())
+                n_settled += 1
+                continue
+            # both legs filled but landed in 'error' -> fall through to normal logic
 
         pm_result, pm_pnl, yes_won = _pm_leg(r, pm_res.get(r["polymarket_market_id"]))
         bf_result, x_won_bf = _bf_leg(r, bf_st.get(r["betfair_market_id"]))
