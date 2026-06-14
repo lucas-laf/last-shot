@@ -163,7 +163,17 @@ class MakerExecutor:
 
     # ---------- quoting loop ----------
 
+    async def _startup_cleanup(self) -> None:
+        """Cancel any PM orders left resting by a prior ungraceful shutdown
+        (SIGTERM may skip the finally), so we never inherit an unmanaged order."""
+        ids = await self.pm_exec.open_order_ids()
+        if ids:
+            n = await self.pm_exec.cancel_all(ids)
+            logger.warning("maker startup: cancelled %d orphaned resting order(s)", n)
+            self.store.save_exec_event("maker_startup_cleanup", {"cancelled": n})
+
     async def quoting_loop(self) -> None:
+        await self._startup_cleanup()
         while not self._shutdown:
             await asyncio.sleep(self.refresh_s)
             if not self._should_quote():

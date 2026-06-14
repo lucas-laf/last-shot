@@ -264,6 +264,19 @@ class PolymarketExecutor:
             logger.warning("get_order(%s) failed: %s", str(order_id)[:14], e)
             return {}
 
+    async def open_order_ids(self) -> list[str]:
+        """All currently-open order ids on the account (for startup cleanup of
+        orphans left by an ungraceful shutdown). [] if no client."""
+        if self._client is None:
+            return []
+        import asyncio
+        try:
+            orders = await asyncio.to_thread(self._client.get_open_orders) or []
+            return [o.get("id") for o in orders if o.get("id")]
+        except Exception as e:  # noqa: BLE001
+            logger.warning("open_order_ids failed: %s", e)
+            return []
+
     async def cancel_all(self, order_ids: list[str]) -> int:
         """Best-effort cancel of the given resting orders. Returns count cancelled.
         Used as the maker safety rail (disarm / shutdown / stale)."""
