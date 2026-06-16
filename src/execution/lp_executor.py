@@ -310,25 +310,21 @@ class LpExecutor:
                         agg["open_quotes"], " KILLED" if self._killed else "")
 
     async def _fetch_onchain_rewards(self) -> dict[str, float]:
-        """Actual earnings per condition_id, today. Best-effort via the V2 client;
-        returns {} if the client doesn't expose an earnings helper (pre-flight will
-        confirm the exact method on the armed box). Never raises into the loop."""
-        client = self.pm_exec._client
+        """Actual earnings per condition_id for today (UTC), via the V2 client's
+        get_earnings_for_user_for_day(date) -> [{condition_id, earnings, ...}].
+        Never raises into the loop."""
+        fn = getattr(self.pm_exec._client, "get_earnings_for_user_for_day", None)
+        if fn is None:
+            logger.info("LP: get_earnings_for_user_for_day missing; capture-rate manual")
+            return {}
         date = datetime.now(timezone.utc).date().isoformat()
-        for meth in ("get_user_earnings", "get_earnings", "get_rewards_user_markets"):
-            fn = getattr(client, meth, None)
-            if fn is None:
-                continue
-            rows = await asyncio.to_thread(fn) if not _takes_args(fn) else \
-                await asyncio.to_thread(fn, date, self.maker_address, self.signature_type)
-            out: dict[str, float] = {}
-            for r in (rows or []):
-                cid = r.get("condition_id") or r.get("conditionId")
-                earns = r.get("earnings") or []
-                out[cid] = out.get(cid, 0.0) + sum(_num(e.get("earnings")) or 0.0 for e in earns)
-            return out
-        logger.info("LP: no earnings helper on V2 client; capture-rate pending manual reconcile")
-        return {}
+        rows = await asyncio.to_thread(fn, date)
+        out: dict[str, float] = {}
+        for r in (rows or []):
+            cid = r.get("condition_id") or r.get("conditionId")
+            if cid:
+                out[cid] = out.get(cid, 0.0) + (_num(r.get("earnings")) or 0.0)
+        return out
 
     # --------------------------------------------------------- reconcile / orders
     async def _reconcile(self, m: MarketState, side: str) -> None:
@@ -435,11 +431,3 @@ class LpExecutor:
 
     def shutdown(self) -> None:
         self._shutdown = True
-
-
-def _takes_args(fn) -> bool:
-    try:
-        import inspect
-        return len(inspect.signature(fn).parameters) > 0
-    except (TypeError, ValueError):
-        return False

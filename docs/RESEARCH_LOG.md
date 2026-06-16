@@ -132,6 +132,36 @@ Newest entries at the top of the Journal.
   — the only look-ahead-free proof. (3) Consider Betfair-vs-Pinnacle **arb** (lay side)
   separately. Also keep H4 (PM LP) queued as the season-independent alternative.
 
+### 2026-06-16 (cont.) — startup reconciliation BUILT (cap now holds across restarts)
+- Fixed the unattended-blocker. `lp_run` now, on launch: reads our LP `condition_id`s
+  from `lp_fill` events, fetches ON-CHAIN positions (data-api), attributes them to LP
+  (vs legacy wallet holdings), and: (a) **counts committed capital against budget**
+  (`available = budget − committed`), (b) **seeds MarketState inventory** for held
+  markets, (c) excludes held markets from NEW allocation, (d) tracks held-but-unscanned
+  positions as count-only states. `_deployed_usd` (reserved + Σ cost_basis) + the
+  executor budget gate enforce the cap. Also wired `_fetch_onchain_rewards` to the real
+  `get_earnings_for_user_for_day(date)`.
+- **Validated (dry-run, no money):** detected held AJ (50 YES @0.72 = **$36 committed**),
+  available **$14**, **0 new markets funded** (can't fit a $50 min_size) ⇒ a relaunch
+  no longer stacks a fresh $50 on top. Cap holds. (AJ fell to count-only this scan as it
+  wasn't in the candidate set; it's counted + held, not actively flattened.)
+- **Resume decision still needed (operator):** at $50 budget, $36 is locked in AJ so only
+  $14 is free → the bot would open ~nothing new. To run a real Stage 0b/0c either
+  (a) flatten AJ to free the $36 (needs a V2 *sell*, untested), (b) raise budget to ~$86
+  ($36 held + $50 new), or (c) accept it just holds AJ. Then relaunch (detached).
+
+### 2026-06-16 — first on-chain capture-rate datapoint (tiny but ENCOURAGING)
+- Pulled actual earnings via V2 client `get_earnings_for_user_for_day`. **2026-06-15:
+  $0.047978** from the AJ market (condition 0xaf13295...); 2026-06-16: $0 (bot stopped).
+- Capture-rate calc: orders qualified ~8 min two-sided. Pool flow in window ≈ $27 ×
+  8/1440 ≈ $0.15 → **realized share ~32%** vs **model ~30%** (50 vs ~118 competing) ⇒
+  **capture ≈ ~100% (1.07×) of model.** Better than the hedged "capture << model" fear.
+- HEAVY caveat: 4.8¢ over 8 min = tiny/noisy; doesn't test full-day capture (competition
+  varies) or inventory cost. One datapoint, not a verdict. Real read needs a full day.
+- Reward methods confirmed on V2 client: get_earnings_for_user_for_day(date),
+  get_total_earnings_for_user_for_day, get_user_earnings_and_markets_config — wire these
+  into `_fetch_onchain_rewards` (replace the getattr guesswork).
+
 ### 2026-06-15 (cont.14) — Stage 0b first FILL + parked safe overnight
 - The AJ Dybantsa YES quote **filled** (~8 min resting): bought 50 YES @0.72, mid now
   0.735 → **+$0.75** (favourable — mean-reversion thesis working). Fill detection +
