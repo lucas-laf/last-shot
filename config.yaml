@@ -29,8 +29,8 @@ tracking:
 
 signals:
   # commission/min edge can be overridden by BETFAIR_COMMISSION / MIN_EDGE in .env
-  betfair_commission: 0.05
-  min_edge: 0.02                # extra margin required beyond modeled costs
+  betfair_commission: 0.02     # actual account commission (confirmed 2026-06-14); .env overrides
+  min_edge: 0.01               # extra margin beyond modeled costs (raised off convergence-era 0.0025 on 2026-06-14); .env overrides
   polymarket_default_taker_fee: 0.0   # per-market taker_base_fee from API takes precedence
   max_paper_stake: 100.0        # nominal stake per paper trade (GBP-equivalent)
   max_paper_trades_per_outcome: 3   # cap re-fires on one outcome (cooldown alone
@@ -45,8 +45,8 @@ signals:
                                 # than this — a wide mid is an artifact, not a price
 
 execution:
-  armed: false                  # disarmed (CP2 paused: naked-leg bug)
-  live_categories: [soccer, politics]   # minute-scale arb windows only, to start
+  armed: true                   # CP2 soak (box-local; reverted after)
+  live_categories: [soccer, politics, tennis, basketball, baseball, american_football]   # taker + maker both run tennis in parallel
   max_shares_per_leg: 5.0       # ~£2-4 exposure per leg at typical prices
   max_arbs_per_outcome: 1
   max_daily_capital: 100.0      # CP2: deploy most of the ~$113 float (float is the hard cap)
@@ -54,3 +54,40 @@ execution:
   max_live_arbs: 1000           # effectively unbounded; float + daily cap throttle
   min_pm_notional: 1.0          # PM enforces $1 min order notional (confirmed live)
   min_bf_stake_gbp: 2.0         # Betfair £2 min stake
+  maker:                        # maker-side executor (rest passive PM quotes, hedge on fill)
+    enabled: true               # re-armed 2026-06-14 (3rd test) WITH pre-match gate: only quotes bet_delay=0 markets, so the hedge isn't held by Betfair's in-play delay (the cause of the Blinkova/Golubic expiries). one_shot.
+    margin: 0.02                # locked buffer (backtest: best net at our 0.5s poll)
+    refresh_s: 0.5              # quoting cadence / min re-quote interval
+    poll_s: 0.25                # fill-poll cadence (drives the leg-risk window); tightened 0.5->0.25 to shrink fill->hedge gap
+    cancel_stale_s: 30.0        # pull quote if a venue quote older than this (matches backtest FRESH_S; tennis ticks sparsely between points)
+    reprice_eps: 0.01           # min Betfair move to justify cancel+replace (anti-churn)
+    max_open_quotes: 8          # bounded by float / quote notional
+    quote_shares: 5.0           # shares per resting quote
+    min_quote_shares: 2.0
+    one_shot: true              # one filled maker arb then auto-disarm (live test)
+    max_live_arbs: 1
+    categories: [tennis]        # where taker capture is poor; maker's target
+    float_usd: 80.0             # hard pUSD reservation cap
+  lp:                           # Polymarket LP / liquidity-reward maker (no Betfair hedge)
+    # Separate entrypoint: `python -m src.execution.lp_run`. Arming still needs
+    # EXECUTOR_ARMED=1 in env AND execution.armed; without it every order is SHADOW.
+    enabled: true               # if false, lp_run refuses to start
+    budget_usd: 50.0            # HARD capital ceiling (Stage 0b=50 -> 0c=150 -> Stage1=500)
+    half_spread_ticks: 1        # quote this many ticks inside mid (tight = more qScore)
+    size_mult: 1.0              # per-side shares = size_mult * market.min_size
+    refresh_s: 20.0             # quoting / re-quote cadence
+    poll_s: 5.0                 # fill-poll cadence
+    book_poll_s: 10.0           # /book mid-refresh cadence (self-sourced mid)
+    reward_poll_s: 900.0        # actual-earnings poll (rewards settle daily)
+    metrics_s: 60.0             # per-market + aggregate logging cadence
+    reprice_eps: 0.005          # min mid move to justify cancel+replace (anti-churn)
+    max_open_quotes: 20         # bounded by budget / quote notional
+    inv_cap_mult: 3.0           # inventory cap = this * min_size before skew flattens
+    inv_book_frac: 0.5          # per-side size <= this * competing book (<=50% of book)
+    jump_halt_pct: 0.15         # mid move > this between book polls -> cancel that market
+    kill_drawdown_frac: 0.15    # net <= -this * deployed -> halt + cancel_all (manual flatten)
+    blackout_hours: 48.0        # skip markets resolving within this window
+    scan_limit: 60              # scan_candidates universe size
+    min_pool: 20.0              # min reward $/day to include a market
+    max_min_size: 100           # only markets with min_size <= this (so budget spans several)
+    hurdle_mo_pct: 10.0         # min modelled gross yield to include a market

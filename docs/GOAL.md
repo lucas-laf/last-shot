@@ -30,8 +30,7 @@ documented that no such edge is reachable and why.
 
 ## Access constraints (operator, 2026-06-14)
 
-UK-based. **Have:** Betfair, Polymarket, Coinbase (crypto **spot** only — FCA bans
-retail crypto derivatives, so no funding-rate/perp arb). **Kalshi: no access** (US
+**Have:** Betfair, Polymarket, Coinbase **Kalshi: no access** (US
 only). **Will open:** other betting exchanges (Smarkets/Matchbook) + soft
 sportsbooks incl. **Pinnacle** (sharp, high-limit, no gubbing — the key reference).
 
@@ -82,6 +81,49 @@ The make-or-break number for the recycle model is **deployable edge/day**, so
 absorbs) → if promising, backtest with results → paper-trade survivors → live pilot
 (gated) → scale`. Kill fast; log every hypothesis (open / testing / killed / promoted
 + why) in [RESEARCH_LOG.md](RESEARCH_LOG.md).
+
+## Methodology guardrails (hard rules — read before trusting any backtest)
+
+### 1. Never peek into the future (no look-ahead bias)
+
+**The selection signal — what tells you to place a bet — must use only data that
+exists at the moment you would actually place it.** Settling on the real result is
+fine (that's just measuring outcomes); the trap is letting *future* information
+decide *which* bets to take or *what price* to assume.
+
+- ✅ **Allowed:** filter/bet using the soft-book price and the sharp's price **as
+  they are right now**; settle the bet on the actual match result.
+- ❌ **Forbidden as a signal:** the **closing** line (you don't know it when betting
+  early), the result, post-event info, or any value sampled later than your entry.
+- The closing line is allowed **only as after-the-fact validation** (CLV — did my
+  pick beat the eventual close?), never as a selection input.
+
+**Worked example (a real trap we hit, 2026-06-14→15):** "bet the early soft price
+when it beats Pinnacle's **closing** de-vigged line" backtested at **+6.3% ROI**.
+But you can't see Pinnacle's close when betting early — that's look-ahead. The
+implementable version, "early soft price vs Pinnacle's **early** line (both known
+at bet time)," flipped to **−9% to −30% ROI**. The "edge" was almost entirely the
+peek. Rule of thumb: if removing every value sampled *after* your entry timestamp
+changes the result, the original result was fiction.
+
+Other common look-ahead leaks to check for: using a same-row "average/max" that was
+computed across the whole event window; survivorship (only events that still had a
+price at close); resolving with odds revised after news broke; and train/test
+contamination when fitting any model.
+
+### 2. Avoid edges that depend on staying un-gubbed
+
+Soft books **limit, ban, or "gub"** (stake-restrict) winning customers, often within
+days/weeks. Treat the ability to keep getting a soft price as a **decaying, finite
+resource**, not a steady-state assumption. Prefer edges that survive on
+**non-gubbing venues** (sharp books like Pinnacle, and exchanges like
+Betfair/Smarkets/Matchbook where you pay commission but don't get banned for
+winning). When scoring a candidate, **explicitly state its gubbing exposure** and
+**haircut capacity** for it: an edge that only exists at soft-book stake limits and
+evaporates after a few hundred dollars of winning bets is **low-capacity by
+construction** and should rank below an equally-sized edge on a non-gubbing venue.
+Do not promote a strategy to "live" whose entire EV assumes soft books that will
+restrict you before meaningful capital is deployed.
 
 ## Remaining operator inputs
 
