@@ -115,13 +115,15 @@ but the mechanism clearly degraded the edge.
 4. **Down-weight / skip one-directional-flow markets** in selection.
 5. (Done) reward-poll wired to the real `get_earnings_for_user_for_day(date)`.
 
-## 9. Current status (2026-06-17)
+## 9. Current status (2026-06-17) — WOUND DOWN
 
-- **Bot STOPPED**; wrapper killed (no auto-restart); **all resting orders cancelled**
-  (open orders = 0); fill/alert monitors stopped.
-- **Held inventory remains** (~**$118** current value, net P&L ≈ **+$0.37**): 50 YES AJ
-  Dybantsa (+$3.25) plus small ~break-even positions in the nominee/crypto markets.
-  These sit until they resolve or are manually closed (no auto-sell in the pilot).
+- **Bot STOPPED**, wrapper killed, all resting orders cancelled, monitors stopped.
+- **All positions CLOSED OUT** (2026-06-17): the V2 *sell* path was validated and used to
+  liquidate all 8 holdings into the books; **0 LP positions, 0 open orders** remaining.
+- **Final realized P&L: net +$0.64** for the whole pilot (USDC $424.55 → $425.19;
+  ~$0.49 of 6/17 reward still to settle → ~+$1.1). The position liquidation realized a
+  ~−$2 trading loss (the inventory drag, crystallized), **more than covered by ~$2.85 of
+  rewards earned**. The pilot cost essentially nothing — marginally net-positive.
 - Code preserved on branch **`lp-rewards-pilot`** (pushed to origin).
 
 ## 10. Verdict & recommendation

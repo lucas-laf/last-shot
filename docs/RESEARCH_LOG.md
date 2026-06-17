@@ -137,6 +137,17 @@ Newest entries at the top of the Journal.
   — the only look-ahead-free proof. (3) Consider Betfair-vs-Pinnacle **arb** (lay side)
   separately. Also keep H4 (PM LP) queued as the season-independent alternative.
 
+### 2026-06-17 (cont.2) — WOUND DOWN: bot stopped, all positions closed, net +$0.64
+- Operator stopped the run; bot killed, all resting orders cancelled (0 open).
+- **Validated the V2 SELL path** (previously untested) — test sell 3 AJ @0.79 matched,
+  then liquidated all 8 holdings into the books. **0 positions, 0 open orders** left.
+- **Final realized: net +$0.64** (USDC $424.55→$425.19; ~$0.49 6/17 reward still to
+  settle → ~+$1.1). Liquidation realized ~−$2 trading loss (inventory drag crystallized;
+  AJ +~$3.5 offsetting nominee losses) but ~$2.85 rewards covered it. **Pilot was
+  marginally net-positive — it cost ~nothing.** Comprehensive writeup: docs/LP_OVERVIEW.md.
+- Open decision (task #11) unchanged: refine (price-band filter etc.) + re-test, or wind
+  down for good. Nothing currently deployed or at risk.
+
 ### 2026-06-17 (cont.) — inventory dynamics + soft-cap finding (Stage-1 refinements)
 - Overnight, low-price nominee markets accumulated directional inventory from
   persistent one-sided flow (Grace Meng repeatedly filled NO → net short YES).
