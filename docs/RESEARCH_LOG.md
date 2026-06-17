@@ -1,5 +1,10 @@
 # Research Log — edge-hunt toward mid-4-figures/month
 
+> ℹ️ **Current approach = Polymarket LP rewards — see [LP_OVERVIEW.md](LP_OVERVIEW.md).**
+> This is the full chronological journal. Entries from **2026-06-15 onward** are the LP
+> pilot (current); earlier entries cover the **now-killed sharp-line edge-hunt**
+> (H1/H2/H3/H5) and are historical.
+
 Running state for the [GOAL.md](GOAL.md) research loop. Each cycle: read this,
 do one unit of work, append results, update the ranking + next action.
 Newest entries at the top of the Journal.
@@ -131,6 +136,50 @@ Newest entries at the top of the Journal.
   (record selections now, settle via API-Football/Betfair after KO) for realized ROI
   — the only look-ahead-free proof. (3) Consider Betfair-vs-Pinnacle **arb** (lay side)
   separately. Also keep H4 (PM LP) queued as the season-independent alternative.
+
+### 2026-06-17 (cont.) — inventory dynamics + soft-cap finding (Stage-1 refinements)
+- Overnight, low-price nominee markets accumulated directional inventory from
+  persistent one-sided flow (Grace Meng repeatedly filled NO → net short YES).
+  **Inventory cap is SOFT:** skew stops *placing* the capped side at ±(inv_cap_mult×
+  min_size)=±60, but an in-flight resting order can fill and overshoot — Grace Meng hit
+  **−67.6** (13% past −60). Dollar risk trivial (~$6.76 max), kill-switch clear, deployed
+  pinned ~$148/150.
+- **Finding = the live cause of the 34% capture:** one-sided flow → one-sided quoting →
+  low qScore + inventory marks slightly against us (trading_pnl −$0.64 as positions built).
+  And one-directional flow can leave inventory **stuck** (no one sells us the offsetting
+  side to flatten).
+- **Stage-1 refinements (before scaling):** (a) HARDEN the inventory cap — cancel the
+  opposite-side quote as inventory nears the cap (don't rely on soft skip); (b) consider
+  an active flatten (reduce-only) path; (c) maybe down-weight/skip markets with strong
+  one-directional flow. None urgent at $150; important at $500+.
+
+### 2026-06-17 — full-day SETTLED capture-rate: 34% (below gate; tempers outlook)
+- 6/16 settled on-chain reward **$2.36** across 5 mkts; model accrued **$6.99** ⇒
+  **full-day capture-rate 34%** (intraday 48–57% were inflated by the lagging reward
+  poll catching up in bursts; settled is authoritative).
+- **Implication:** size-share model ~3× optimistic (not 2×). Gross×0.34: $5k≈$1.7k/mo,
+  $25k≈$3.9k/mo ⇒ **$2–2.5k/mo now needs ~$7–10k**; $5k/mo goal even less likely.
+  Realistic picture moves to the conservative end: **a ~$1–2k/mo edge**, not $2.5k+.
+- Caveats keeping it alive: (1) only a PARTIAL day (~5.5h); (2) **inventory drag** — as
+  positions built the bot quoted one-sided → lower qScore, while the model assumes
+  perfect two-sided, so it over-counts exactly when holding inventory; (3) 34% >> the
+  <20% kill line — edge is real, just smaller.
+- **Decision: do NOT gate Stage 1 on this partial day.** Run a clean full 24h (6/17),
+  re-read capture. ~34% sustained ⇒ reset expectations to ~$1–2k/mo; recovery to 45%+ ⇒
+  better case back. Bot healthy/stable (uptime 2h+, 0 crashes, 0 alerts, cap held).
+
+### 2026-06-16 (cont.2) — Stage 0c LIVE & DETACHED ($150), reconciliation proven
+- Bumped budget_usd 50→150; launched **detached** via `setsid nohup scripts/lp_overnight.sh`
+  (survives session, auto-restart now safe with reconciliation).
+- Startup reconciliation worked in production: held AJ **$36 counted → $114 free**, 52
+  scanned / 44 quotable / 6 active = **5 new markets + AJ held**. Deployed **$134.72 ≤ $150**
+  (reserved + Σ cost_basis) — cap holds, no stacking. New markets are high-pool political
+  nominee mkts (Grace Meng $273/d, Lasher $246/d, Park $227/d) + Ostium; all min_size 20.
+- Quoting two-sided live; first fill within seconds (Grace Meng YES @0.892). net +$3.99,
+  kill-switch clear. Persistent fill/alert monitor running.
+- **Now soaking** for the real multi-market, multi-day capture-rate + inventory-P&L read.
+  Next: check on-chain rewards (get_earnings_for_user_for_day) over the next day(s);
+  decide Stage 1 ($500) at the gate (capture ≥ ~40-50% of model, inventory controlled).
 
 ### 2026-06-16 (cont.) — startup reconciliation BUILT (cap now holds across restarts)
 - Fixed the unattended-blocker. `lp_run` now, on launch: reads our LP `condition_id`s

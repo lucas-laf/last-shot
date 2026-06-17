@@ -72,7 +72,7 @@ execution:
     # Separate entrypoint: `python -m src.execution.lp_run`. Arming still needs
     # EXECUTOR_ARMED=1 in env AND execution.armed; without it every order is SHADOW.
     enabled: true               # if false, lp_run refuses to start
-    budget_usd: 50.0            # HARD capital ceiling (Stage 0b=50 -> 0c=150 -> Stage1=500)
+    budget_usd: 150.0           # Stage 0c (50 -> 150 -> 500). Absorbs the held AJ + funds new mkts
     half_spread_ticks: 1        # quote this many ticks inside mid (tight = more qScore)
     size_mult: 1.0              # per-side shares = size_mult * market.min_size
     refresh_s: 20.0             # quoting / re-quote cadence

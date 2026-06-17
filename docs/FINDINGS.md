@@ -1,5 +1,9 @@
 # last_shot — Findings & Status
 
+> ⚠️ **HISTORICAL — SUPERSEDED.** This documents the original cross-venue
+> Betfair↔Polymarket arbitrage work (real but tiny, ~$20/mo). It is **not the current
+> approach** — see [LP_OVERVIEW.md](LP_OVERVIEW.md) (Polymarket LP rewards). Kept for record.
+
 _As of 2026-06-14. Cross-venue arbitrage between Betfair (exchange) and
 Polymarket (CLOB), live-armed on EC2 (i-068384d6dcb71bee2), min stakes._
 

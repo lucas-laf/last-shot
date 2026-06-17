@@ -1,5 +1,10 @@
 # Research Goal — find an edge that can reach mid-4-figures/month
 
+> ⚠️ **HISTORICAL — SUPERSEDED.** This was the broad edge-hunt goal. The hunt is
+> concluded: the sharp-line hypotheses (H1/H2/H3/H5) were killed; the only surviving
+> approach is **Polymarket LP rewards — see [LP_OVERVIEW.md](LP_OVERVIEW.md)**. Kept for
+> context only; not the current direction.
+
 _Status: scoped 2026-06-14 (capital, risk, access, data all set). Pending: budget/
 cadence + operator "go". Progress tracked in [RESEARCH_LOG.md](RESEARCH_LOG.md)._
 

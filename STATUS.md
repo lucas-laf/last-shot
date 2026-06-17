@@ -1,5 +1,8 @@
 # last_shot — project status & handoff
 
+> ⚠️ **HISTORICAL — SUPERSEDED.** Status of the original cross-venue arb project. The
+> current approach is **Polymarket LP rewards — see [docs/LP_OVERVIEW.md](docs/LP_OVERVIEW.md).**
+
 
 
 ## What this is
